@@ -1,0 +1,9 @@
+max_width = 100
+error_on_line_overflow = true
+force_multiline_blocks = true
+imports_granularity = "Crate"
+reorder_impl_items = true
+group_imports = "StdExternalCrate"
+unstable_features = true
+use_field_init_shorthand = true
+wrap_comments = true
