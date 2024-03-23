@@ -3,5 +3,5 @@ resolver = "2"
 members = [
   "ebql-prototype",
   "ebql",
-  "basic-query",
+  "basic-query", "bpf-prototype",
 ]
