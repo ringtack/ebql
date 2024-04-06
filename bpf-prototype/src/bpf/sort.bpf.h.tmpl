@@ -1,0 +1,71 @@
+#pragma once
+
+/**
+ * Template for sort implementations, using the TinyTemplate template enginer. Used by
+ * BpfProgramBuilder to create specialized implementations for queries.
+ */
+
+#include "common.bpf.h"
+
+#define LOOP_UNROLL_FULL #pragma clang loop unroll(full)
+
+static void __always_inline isort({is_q_type} * arr, u32 arr_sz) {
+  u32 i, j;
+  LOOP_UNROLL_FULL
+  for (i = 1; i < arr_sz; i++) {
+    {is_q_type} v = arr[i];
+    j = i - 1;
+    /* While prev member is less than curr, move it up*/
+    while (j >= 0 && arr[j].{is_q_member} < v.{is_q_member}) {
+      arr[j + 1] = arr[j];
+      j -= 1;
+    }
+    arr[j + 1] = v;
+  }
+}
+
+// We must manually limit the number of iterations possible to make the verifier confident that the
+// search terminates. Here, 2^19 can bisect 524,288 entries, which should cover the maximum possible
+// array size (which we should limit regardless, since BPF programs can run a max of 1M
+// instructions; see MAX_ARR_SIZE).
+#define MAX_BINARY_SEARCH_DEPTH 19
+
+// Since BPF programs can run a max of 1 million instructions, we limit the maximum possible array
+// size to 2^18 (i.e. 262144) entries. For larger arrays (i.e. windows), windowing must be
+// implemented in user-space.
+#define MAX_ARR_SIZE 1 << 18
+
+// Error codes
+#define SHOULD_NEVER_HAPPEN 100
+#define EXHAUSTED_ITERATIONS 101
+#define NOT_FOUND 0xBADFBADFBADF
+
+// Performs binary search on the array (with specified arr_sz, value to find, and member to
+// compare). Copies the final index to res, or NOT_FOUND.
+//
+// Credit to [parca-agent/parca-dev](https://github.com/parca-dev/parca-agent/tree/main) for the
+// implementation.
+static void __always_inline bsearch({bs_q_type} * arr, u32 arr_sz, {bs_cmp_type} value) {
+  u64 l = 0, r = arr_sz;
+  for (u32 i = 0; i < MAX_BINARY_SEARCH_DEPTH; i++) {
+    /* Here, we don't worry about int overflow, since arrays can only be MAX_ARR_SIZE large*/
+    u32 mid = (l + r) / 2;
+    if (l >= r) {
+      res = NOT_FOUND;
+      break;
+    }
+    /* Appease the verifier */
+    if (mid < 0 || mid >= MAX_ARR_SIZE) {
+      ERROR("Should never happen")
+      return SHOULD_NEVER_HAPPEN;
+    }
+    if (arr[mid].{bs_q_member} < value)
+      l = mid + 1;
+    else if (arr[mid].{bs_q_member} > value)
+      r = mid;
+    else {
+      res = mid;
+      break;
+    }
+  }
+}

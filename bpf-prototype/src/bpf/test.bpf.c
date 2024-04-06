@@ -11,7 +11,8 @@ struct select_QdOb5 {
 	u64 count;
 	u64 time;
 	s32 pid;
-} __attribute__((packed));
+}; // __attribute__((packed));
+
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 256 * 1024);
@@ -26,10 +27,10 @@ u32 bpf_select_ckJsb(struct trace_event_raw_sys_enter * ctx) {
 	bpf_printk("got event\n");
 	struct select_QdOb5 * e = bpf_ringbuf_reserve(&ring_buf_8uf3Z, sizeof(struct select_QdOb5), 0);
 	if (!e) {
-bpf_printk("failed to allocate values\n");
-
-return 1;
+    bpf_printk("failed to allocate values\n");
+    return 1;
 	}
+
 	e->fd = (u64) ctx->args[0];
 	e->count = (u64) ctx->args[2];
 	e->time = bpf_ktime_get_ns();

@@ -1,8 +1,9 @@
 mod test {
-    include!(concat!(env!("OUT_DIR"), "/test.skel.rs"));
+    include!(concat!(env!("OUT_DIR"), "/simple.skel.rs"));
 }
 
 use core::str;
+use std::time::Duration;
 
 use ebql_prototype::{
     bpf_gen::{BpfCompiler, StructRepr},
@@ -19,22 +20,19 @@ fn main() {
     /*
     Suppose we want the following query:
 
-    SELECT ktime (8), pfn (8), i_ino (8), pid (4), tgid (4), comm,
-      pid, tgid AS get_ns_current_pid_tgid(dev, ino, ...)
-      WHERE pid = target_pid
-        AND
-
     let add = QueryBuilder::new()
-      .Event("mm_filemap_add_to_page_cache")
-      .Window(Count(256, 1))
-      .Project(time, pfn, i_ino, s_dev, pid, tgid, comm)
-      .Select( // TODO: better operator name? What's the standard? LINQ does Select
-        [], // source args
-        [count], // new args
-        |args| -> { count = global.count++ } // TODO: figure out how to handle global args?
+      .Event("filemap/mm_filemap_add_to_page_cache")
+      .State( [{count, u32}] ) // user-defined state?
+      .Window(Count(1024, 16)) // specify number-based window (other opts: time, session)
+      .Project(time, pfn, i_ino, s_dev, pid, tgid, comm) // get baseline attributes
+      .Map( // TODO: better operator name? replace with Map? LINQ does Select
+        [s_dev, i_ino], // source args
+        - NOTE: this is mostly used for sake of demonstration, p sure this is only relevant for dev/ino in procfs
+        [ns_pid], // new args
+        // |args| -> { count = global.count++ } // TODO: figure out how to handle global args?
       )
       .Filter(pid == target_pid)
-      .Map([
+      .MapInPlace([
         { [time], [time], Div(time, 1_000_000), }, // map functions; if out same, keep name
       ])
       .Aggregate(GroupBy, i_ino) // TODO: for group bys, might need to emit to user-space? maintain set and emit in batches, or just defer to user space; could maintain a map of maps for grouping results, pre-created and hashed or smth, but might duplicate computation
@@ -79,6 +77,8 @@ fn main() {
         ) // output shares join clauses, renames other clauses
         .Build(BatchSize: 256) // TODO: maybe use step size as batch??
 
+
+    For a representative example, consider joining by page cache evictions and syscalls by pid
      */
 
     // Define struct representation and event handler
@@ -90,7 +90,7 @@ fn main() {
     let process_event = create_event_handler(s_repr);
 
     // Initialize BPF skeleton program
-    let skel_builder = TestSkelBuilder::default();
+    let skel_builder = SimpleSkelBuilder::default();
     let open_skel = skel_builder.open().unwrap();
     let mut skel = open_skel.load().unwrap();
 
@@ -101,10 +101,12 @@ fn main() {
     let rb = builder.build().unwrap();
 
     // Attach program to event
-    let link = skel.progs_mut().bpf_select_ckJsb().attach().unwrap();
+    let link = skel.progs_mut().bpf_query_simple().attach().unwrap();
 
     // Continuously poll until stopped
-    while rb.poll(Duration::MAX).is_ok() {}
+    while rb.poll(Duration::from_secs(1)).is_ok() {
+        println!("polling");
+    }
 }
 
 pub fn create_event_handler(s_repr: StructRepr) -> impl FnMut(&[u8]) -> i32 {
