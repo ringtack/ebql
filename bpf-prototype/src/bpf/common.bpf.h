@@ -14,6 +14,7 @@
 
 // Return values
 #define BUG_ERROR_CODE 0xDADBEEF
+#define UNIMPLEMENTED 0xBADBAD
 #define EINVAL 22
 #define ARRAY_FULL 0xBADBEEF
 

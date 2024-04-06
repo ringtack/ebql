@@ -10,16 +10,15 @@
  *
  * Stream processing occurs only when the step is triggered (e.g. the step duration elapsed in a
  * time interval).
+ *
+ * RESTRICTIONS (until I can figure out more verifier stuff):
+ * - For counts, WINDOW_SIZE % STEP == 0 (i.e. WINDOW_SIZE must be divisible by STEP)
+ * - For time, STEP == INTERVAL (i.e. all time windows must be tumbling windows).
  */
 
 #include "common.bpf.h"
 
 // Window construction definitions
-// TODO: maybe change buffer size to a diff variable, and in time windows, make it a const volatile
-// to update if too much data; I think we can run-time replace a map
-// ^ But this requires a map-of-maps, which incurs significant runtime overhead w/ bounds
-// checking... perhaps better idea is to perform PGO in query optimization (likely that this is
-// necessary anyways for opt purposes), then adjust window size w/ a new program then??
 #define WINDOW_SIZE 1024  // TODO: tmpl
 // If count, step == n elements; if time, step == ns.
 #define STEP 16
@@ -45,12 +44,12 @@ typedef struct window {
   // Window storage: window itself, next step, and scratch space for expired values.
   query_simple_t win[WINDOW_SIZE];
   // {{ if window.is_count }}
-  // query_simple_t next[STEP];
-  // query_simple_t expired[STEP];
+  query_simple_t next[STEP];
+  query_simple_t expired[STEP];
   // {{ else }}
   // TODO: see if we can shrink these
-  query_simple_t next[WINDOW_SIZE];
-  query_simple_t expired[WINDOW_SIZE];
+  // query_simple_t next[WINDOW_SIZE];
+  // query_simple_t expired[WINDOW_SIZE];
   // {{ endif }}
 
   // Window metadata
@@ -73,6 +72,10 @@ static u32 __always_inline window_add(window_t *w, query_simple_t q) {
   }
   // {{ if window.is_count }}
   // COUNT WINDOW COMPUTATION
+  if (WINDOW_SIZE % STEP != 0) {
+    ERROR("For now (i.e. until I can figure out verifier), STEP must be divisible by WINDOW_SIZE");
+    return UNIMPLEMENTED;
+  }
   // If window not full, append to end of window
   if (w->w_size < WINDOW_SIZE) {
     // Bounds check for verifier
@@ -81,7 +84,7 @@ static u32 __always_inline window_add(window_t *w, query_simple_t q) {
       return BUG_ERROR_CODE;
     }
     w->win[w->w_head] = q;
-    // Support wrap-around TODO: check if Clang optimizes power-of-2 mods
+    // Support wrap-around
     w->w_head = (w->w_head + 1) % WINDOW_SIZE;
     w->w_size++;
   } else {
@@ -95,33 +98,23 @@ static u32 __always_inline window_add(window_t *w, query_simple_t q) {
     w->next_idx++;
     // If step becomes full, migrate elements to be expired, and new elements
     if (w->next_idx == STEP) {
-      // Copy over elements to be expired
-      // Check if we can copy over in one memcpy
-      if (w->w_tail + STEP <= WINDOW_SIZE) {
-        // Why do we use bpf_probe_read_kernel? because __builtin_memcpy works only when the amount
-        // to copy < 512B; otherwise, it exceeds the BPF stack size limit.
-        bpf_probe_read_kernel(w->expired, STEP * sizeof(query_simple_t), &w->win[w->w_tail]);
-      } else {
-        u32 n = WINDOW_SIZE - w->w_tail;
-        // Copy over [tail, WINDOW_SIZE) aka n elements
-        bpf_probe_read_kernel(w->expired, n * sizeof(query_simple_t), &w->win[w->w_tail]);
-        // Copy over [0, STEP - n) aka STEP - n elements
-        bpf_probe_read_kernel(&w->expired[n], (STEP - n) * sizeof(query_simple_t), w->win);
-      }
+      // Because STEP divides WINDOW_SIZE, we can always copy in one go
+      // Appease verifier
+        if (w->w_tail >= WINDOW_SIZE) {
+          ERROR("BUG: window.tail >= WINDOW_SIZE");
+          return BUG_ERROR_CODE;
+        }
+      bpf_probe_read_kernel(w->expired, STEP * sizeof(query_simple_t), &w->win[w->w_tail]);
       // Advance tail
       w->w_tail = (w->w_tail + STEP) % WINDOW_SIZE;
 
       // Copy over new elements
-      // Check if we can copy over in one memcpy
-      if (w->w_head + STEP <= WINDOW_SIZE) {
-        bpf_probe_read_kernel(&w->win[w->w_head], STEP * sizeof(query_simple_t), w->next);
-      } else {
-        u32 n = WINDOW_SIZE - w->w_head;
-        // Copy over first n elements to [head, WINDOW_SIZE)
-        bpf_probe_read_kernel(&w->win[w->w_head],  n * sizeof(query_simple_t), w->next);
-        // Copy over remaining elements to [0, STEP - n)
-        bpf_probe_read_kernel(w->win, (STEP - n) * sizeof(query_simple_t), &w->next[n]);
+      // Bounds check for verifier
+      if (w->w_head >= WINDOW_SIZE) {
+        ERROR("BUG: window.head >= WINDOW_SIZE");
+        return BUG_ERROR_CODE;
       }
+      bpf_probe_read_kernel(&w->win[w->w_head], STEP * sizeof(query_simple_t), w->next);
       // Advance head
       w->w_head = (w->w_head + STEP) % WINDOW_SIZE;
       // Reset next index
@@ -135,18 +128,14 @@ static u32 __always_inline window_add(window_t *w, query_simple_t q) {
   }
   // {{ else }}
   // TIME WINDOW COMPUTATION
-  // if ts(q) - ts(elt_0) < interval, add to window
-  // Bounds check for verifier
-  if (w->w_tail >= WINDOW_SIZE) {
-      ERROR("BUG: window.tail >= WINDOW_SIZE");
-      return BUG_ERROR_CODE;
+  if (STEP != INTERVAL) {
+    ERROR("For now (i.e. until I can figure out verifier), time windows must be tumbling");
+    return UNIMPLEMENTED;
   }
-  if (w->w_head >= WINDOW_SIZE) {
-    ERROR("BUG: window.head >= WINDOW_SIZE");
-    return BUG_ERROR_CODE;
-  }
-  u64 t_since_oldest = q.time - w->win[w->w_tail].time;
-  if (t_since_oldest < INTERVAL) {
+  // Since tumbling window, oldest element is always elt_0
+  u64 t_since_oldest = q.time - w->win[0].time;
+  // Add to window if no elements currently, or within start of this window
+  if (w->w_size == 0 || t_since_oldest < INTERVAL) {
     // If full, log warning and drop
     // TODO: figure out better thing to do here; I think could have a global pool of maps as backup?
     if (w->w_size >= WINDOW_SIZE) {
@@ -154,82 +143,35 @@ static u32 __always_inline window_add(window_t *w, query_simple_t q) {
       return ARRAY_FULL;
     }
     w->win[w->w_head] = q;
-    w->w_head = (w->w_head + 1) % WINDOW_SIZE;
+    // Don't need to account for wrap around, since if size is full we just don't add
+    w->w_head++;
     w->w_size++;
   } else {
     // Otherwise, first check if more than (INTERVAL+STEP) time has elapsed since the oldest element
     // in the window; if so, flush all elements and copy over next buffer to window
-    if (t_since_oldest > (INTERVAL + STEP)) {
-      // Find new oldest time in window
-      u32 new_oldest_t = w->win[w->w_tail].time + STEP;
-      // Find new tail
-      u32 new_tail = w->w_tail;
-      // Special-case for tumbling windows
-      if (INTERVAL == STEP) {
-        // For tumbling windows, new_tail == w->w_head
-        new_tail = w->w_head;
-      } else {
-        // Appease verifier
-        // TODO: time-permitting, implement binary search on circular buffer
-        // (https://stackoverflow.com/a/2835066/15140014)
-        for (u32 i = 0; i < WINDOW_SIZE; i++) {
-          if (w->win[new_tail].time >= new_oldest_t) break;
-          new_tail = (new_tail + 1) % WINDOW_SIZE;
-        }
-      }
-
-      // Copy over expired values
-      expired = (new_tail != w->w_tail)
-                    // Add WINDOW_SIZE to handle cases in which new_tail < old_tail
-                    ? (new_tail + WINDOW_SIZE - w->w_tail) % WINDOW_SIZE
-                    // If new_tail == old_tail, window is full, so copy over everything
-                    : WINDOW_SIZE;
-      // Check if we can copy over in one memcpy; can't do == here, since if new_tail != 0, expired
-      // can be WINDOW_SIZE and so an overflow could occur
-      if (w->w_tail < new_tail) {
-        bpf_probe_read_kernel(w->expired, expired * sizeof(query_simple_t), &w->win[w->w_tail]);
-      } else {
-        u32 n = WINDOW_SIZE - w->w_tail;
-        // Copy [old_tail, WINDOW_SIZE) aka n elements
-        bpf_probe_read_kernel(w->expired, n * sizeof(query_simple_t), &w->win[w->w_tail]);
-        // Copy remaining [0, expired-n) aka expired-n elements
-        bpf_probe_read_kernel(&w->expired[n], (expired - n) * sizeof(query_simple_t), w->win);
-      }
-      // Advance tail
-      w->w_tail = new_tail;
-
-      // Copy over next buffer to window
-      // Appease the verifier
-      if (w->w_head >= WINDOW_SIZE) {
-        ERROR("BUG: window.head >= WINDOW_SIZE");
+    if (t_since_oldest > INTERVAL + STEP) {
+      // All elements in window are now expired
+      expired = w->w_size;
+      // Appease verifier
+      if (w->w_size > WINDOW_SIZE) {
+        ERROR("BUG: window.size > WINDOW_SIZE");
         return BUG_ERROR_CODE;
       }
-      // NOTE: HAD TO ADD
+      // Copy over all elements in window to expired buffer
+      // Since window is tumbling, can just copy over entire array
+      bpf_probe_read_kernel(w->expired, w->w_size * sizeof(query_simple_t), w->win);
+      // Reset tail (NOTE: in tumbling windows, this is unnecessary, since w_tail == 0 always)
+      w->w_tail = 0;
+
+      // Copy over new elements to current window
+      // Appease verifier
       if (w->next_idx > WINDOW_SIZE) {
         ERROR("BUG: window.next_idx > WINDOW_SIZE");
         return BUG_ERROR_CODE;
       }
-      // Check if we can copy over in one memcpy; here next_idx == # of new elements in next window
-      if (w->w_head + w->next_idx <= WINDOW_SIZE) {
-        bpf_probe_read_kernel(&w->win[w->w_head], w->next_idx * sizeof(query_simple_t), w->next);
-      } else {
-        u32 n = WINDOW_SIZE - w->w_head;
-        bpf_probe_read_kernel(&w->win[w->w_head], n * sizeof(query_simple_t), w->next);
-        // Appease the verifier, since it can't verify from L212 that next_idx > n ...
-        if (n > w->next_idx) {
-          ERROR("BUG: n > window.next_idx");
-          return BUG_ERROR_CODE;
-        }
-        u32 left = (w->next_idx - n);
-        if (left + n >= WINDOW_SIZE) {
-          return BUG_ERROR_CODE;
-        }
-        bpf_probe_read_kernel(w->win, left * sizeof(query_simple_t), &w->next[n]);
-      }
-      // Advance head
-      w->w_head = (w->w_head + w->next_idx) % WINDOW_SIZE;
-      // Here, window size might change: window lost expired items, but gained next_idx items
-      w->w_size = w->w_size + w->next_idx - expired;
+      bpf_probe_read_kernel(w->win, w->next_idx * sizeof(query_simple_t), w->next);
+      // Update head and window size
+      w->w_size = w->w_head = w->next_idx;
       // Reset next buffer back to beginning
       w->next_idx = 0;
     } else {
@@ -238,7 +180,7 @@ static u32 __always_inline window_add(window_t *w, query_simple_t q) {
       if (w->next_idx >= WINDOW_SIZE) {
         WARN("Next step buffer is full; dropping new event...");
         return ARRAY_FULL;
-    }
+      }
     }
     // Add to next window
     w->next[w->next_idx] = q;

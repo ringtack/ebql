@@ -13,7 +13,7 @@ fn main() {
 
     SkeletonBuilder::new()
         .source(SRC)
-        .clang_args(format!("-I{VMLINUX}"))
+        .clang_args(format!("-I{VMLINUX} -g"))
         .build_and_generate(out)
         .expect("bpf compilation failed");
 
