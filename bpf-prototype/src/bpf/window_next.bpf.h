@@ -30,27 +30,27 @@
 // {{ endif }}
 
 typedef struct query_simple {
-	u64 time;
+  u64 time;
   u64 pfn;
   u64 i_ino;
   u64 count;  // NOTE: from select; will need to analyze selects in query plan to find new emissions
   u32 s_dev;
   s32 pid;
   s32 tgid;
-  char comm[TASK_COMM_LEN]; // pre-defined by vmlinux.h
-  s32 ns_pid; // not rly useful but 🤷 for sake of demonstration
-} query_simple_t;  // __attribute__((packed));
+  char comm[TASK_COMM_LEN];  // pre-defined by vmlinux.h
+  s32 ns_pid;                // not rly useful but 🤷 for sake of demonstration
+} simple_1_t;                // __attribute__((packed));
 
 typedef struct window {
   // Window storage: window itself, next step, and scratch space for expired values.
-  query_simple_t win[WINDOW_SIZE];
+  simple_1_t win[WINDOW_SIZE];
   // {{ if window.is_count }}
-  query_simple_t next[STEP];
-  query_simple_t expired[STEP];
+  simple_1_t next[STEP];
+  simple_1_t expired[STEP];
   // {{ else }}
   // TODO: see if we can shrink these
-  // query_simple_t next[WINDOW_SIZE];
-  // query_simple_t expired[WINDOW_SIZE];
+  // simple_1_t next[WINDOW_SIZE];
+  // simple_1_t expired[WINDOW_SIZE];
   // {{ endif }}
 
   // Window metadata
@@ -64,7 +64,7 @@ typedef struct window {
 // expired.
 // TODO: benchmark inlining
 // TODO: see if w/q needs to be pointer if function is inlined
-static u32 __always_inline window_add(window_t *w, query_simple_t q) {
+static u32 __always_inline window_add(window_t *w, simple_1_t q) {
   u32 expired = 0;
   // TODO: see if this is necessary if always inlined
   if (!w) {
@@ -100,7 +100,7 @@ static u32 __always_inline window_add(window_t *w, query_simple_t q) {
       if (w->w_tail + STEP <= WINDOW_SIZE) {
         // We use bpf_probe_read_kernel, because __builtin_memcpy works only when the amount
         // to copy < 512B; otherwise, it exceeds the BPF stack size limit.
-        bpf_probe_read_kernel(w->expired, STEP * sizeof(query_simple_t), &w->win[w->w_tail]);
+        bpf_probe_read_kernel(w->expired, STEP * sizeof(simple_1_t), &w->win[w->w_tail]);
       } else {
         // Appease the verifier
         if (w->w_tail >= WINDOW_SIZE) {
@@ -114,9 +114,9 @@ static u32 __always_inline window_add(window_t *w, query_simple_t q) {
         }
         // TODO: HELP
         // Copy over [tail, WINDOW_SIZE) aka n elements
-        bpf_probe_read_kernel(w->expired, n * sizeof(query_simple_t), &w->win[w->w_tail]);
+        bpf_probe_read_kernel(w->expired, n * sizeof(simple_1_t), &w->win[w->w_tail]);
         // Copy over [0, STEP - n) aka STEP - n elements
-        bpf_probe_read_kernel(&w->expired[n], (STEP - n) * sizeof(query_simple_t), w->win);
+        bpf_probe_read_kernel(&w->expired[n], (STEP - n) * sizeof(simple_1_t), w->win);
       }
       // Advance tail
       w->w_tail = (w->w_tail + STEP) % WINDOW_SIZE;
@@ -129,13 +129,13 @@ static u32 __always_inline window_add(window_t *w, query_simple_t q) {
         return BUG_ERROR_CODE;
       }
       if (w->w_head + STEP <= WINDOW_SIZE) {
-        bpf_probe_read_kernel(&w->win[w->w_head], STEP * sizeof(query_simple_t), w->next);
+        bpf_probe_read_kernel(&w->win[w->w_head], STEP * sizeof(simple_1_t), w->next);
       } else {
         u32 n = WINDOW_SIZE - w->w_head;
         // Copy over first n elements to [head, WINDOW_SIZE)
-        bpf_probe_read_kernel(&w->win[w->w_head],  n * sizeof(query_simple_t), w->next);
+        bpf_probe_read_kernel(&w->win[w->w_head], n * sizeof(simple_1_t), w->next);
         // Copy over remaining elements to [0, STEP - n)
-        bpf_probe_read_kernel(w->win, (STEP - n) * sizeof(query_simple_t), &w->next[n]);
+        bpf_probe_read_kernel(w->win, (STEP - n) * sizeof(simple_1_t), &w->next[n]);
       }
       // Advance head
       w->w_head = (w->w_head + STEP) % WINDOW_SIZE;
@@ -153,8 +153,8 @@ static u32 __always_inline window_add(window_t *w, query_simple_t q) {
   // if ts(q) - ts(elt_0) < interval, add to window
   // Bounds check for verifier
   if (w->w_tail >= WINDOW_SIZE) {
-      ERROR("BUG: window.tail >= WINDOW_SIZE");
-      return BUG_ERROR_CODE;
+    ERROR("BUG: window.tail >= WINDOW_SIZE");
+    return BUG_ERROR_CODE;
   }
   if (w->w_head >= WINDOW_SIZE) {
     ERROR("BUG: window.head >= WINDOW_SIZE");
@@ -202,13 +202,13 @@ static u32 __always_inline window_add(window_t *w, query_simple_t q) {
       // Check if we can copy over in one memcpy; can't do == here, since if new_tail != 0, expired
       // can be WINDOW_SIZE and so an overflow could occur
       if (w->w_tail < new_tail) {
-        bpf_probe_read_kernel(w->expired, expired * sizeof(query_simple_t), &w->win[w->w_tail]);
+        bpf_probe_read_kernel(w->expired, expired * sizeof(simple_1_t), &w->win[w->w_tail]);
       } else {
         u32 n = WINDOW_SIZE - w->w_tail;
         // Copy [old_tail, WINDOW_SIZE) aka n elements
-        bpf_probe_read_kernel(w->expired, n * sizeof(query_simple_t), &w->win[w->w_tail]);
+        bpf_probe_read_kernel(w->expired, n * sizeof(simple_1_t), &w->win[w->w_tail]);
         // Copy remaining [0, expired-n) aka expired-n elements
-        bpf_probe_read_kernel(&w->expired[n], (expired - n) * sizeof(query_simple_t), w->win);
+        bpf_probe_read_kernel(&w->expired[n], (expired - n) * sizeof(simple_1_t), w->win);
       }
       // Advance tail
       w->w_tail = new_tail;
@@ -226,10 +226,10 @@ static u32 __always_inline window_add(window_t *w, query_simple_t q) {
       }
       // Check if we can copy over in one memcpy; here next_idx == # of new elements in next window
       if (w->w_head + w->next_idx <= WINDOW_SIZE) {
-        bpf_probe_read_kernel(&w->win[w->w_head], w->next_idx * sizeof(query_simple_t), w->next);
+        bpf_probe_read_kernel(&w->win[w->w_head], w->next_idx * sizeof(simple_1_t), w->next);
       } else {
         u32 n = WINDOW_SIZE - w->w_head;
-        bpf_probe_read_kernel(&w->win[w->w_head], n * sizeof(query_simple_t), w->next);
+        bpf_probe_read_kernel(&w->win[w->w_head], n * sizeof(simple_1_t), w->next);
         // Appease the verifier, since it can't verify from L213 that next_idx > n ...
         if (w->next_idx < n) {
           ERROR("BUG: window.next_idx < n");
@@ -243,10 +243,9 @@ static u32 __always_inline window_add(window_t *w, query_simple_t q) {
         if (left >= ub) {
           left = ub;
         }
-        // bpf_probe_read_kernel(w->win, ub * sizeof(query_simple_t), &w->next[n]);
+        // bpf_probe_read_kernel(w->win, ub * sizeof(simple_1_t), &w->next[n]);
         // TODO: HELP
-        bpf_probe_read_kernel(w->win, left * sizeof(query_simple_t), &w->next[n]);
-
+        bpf_probe_read_kernel(w->win, left * sizeof(simple_1_t), &w->next[n]);
       }
       // Advance head
       w->w_head = (w->w_head + w->next_idx) % WINDOW_SIZE;
