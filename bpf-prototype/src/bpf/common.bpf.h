@@ -18,6 +18,25 @@
 #define EINVAL 22
 #define ARRAY_FULL 0xBADBEEF
 
+// Macro to create a global variable as a map, and corresponding getter
+const u32 zero = 0;
+
+// TODO: convert this into codegen on rust side?
+#define GLOBAL_VAR(var_type, name)    \
+  struct {                            \
+    __uint(type, BPF_MAP_TYPE_ARRAY); \
+    __type(key, u32);                 \
+    __type(value, var_type);          \
+    __uint(max_entries, 1);           \
+  } name##_var SEC(".maps");
+
+#define GLOBAL_GET(var_type, name, var)                   \
+  var_type *var = (var_type *)bpf_map_lookup_elem(&name##_var, &zero); \
+  if (!var) {                                                 \
+    ERROR("BUG: blud should exist"); \
+    return BUG_ERROR_CODE; \
+  }
+
 // Compute array size
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
 
