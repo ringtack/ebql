@@ -2,10 +2,6 @@
 
 /**
  * Helper functions for Joins between two streams.
- *
- * Note that because of eBPF's instruction count limitations, only small joins are supported. Here,
- * we define the maximum Join bucket to be 512 (2^9); thus, in a bucket * bucket iteration, this
- * yields a max of 512*512=262144 (2^18) instructions.
  */
 
 #include "common.bpf.h"
@@ -38,49 +34,53 @@ typedef struct simple_1_simple_2 {
 // - hash of array maps
 // - hash of hash maps
 
-// Restrict maximum bucket size to be 512 (2^9) to limit iterations
-// TODO: benchmark different caps
-#define BUCKET_SIZE (1 << 6)
+// TODO: probably use PGO to estimate bucket size?
+// For now, define this as some factor of window size,
+// under the assumption that there won't be that many of
+// one element
+#define BUCKET_SIZE_JOIN_SIMPLE_1 128
+#define BUCKET_SIZE_JOIN_SIMPLE_2 128
+#define RESULT_SIZE_JOIN_SIMPLE_1_SIMPLE_2 WINDOW_SIZE
 
-// Theoretical max result size is 2^18, but realistically both bucket joins shouldn't fully match
-// after filtering, so lower for memory usage purposes. Here we shrink window size down by 1, since
-// the result struct is roughly twice the size.
-// TODO: evaluate different options
-#define RESULT_SIZE (WINDOW_SIZE >> 1)
-
-// TODO: array full -> specific full conditions
-
-// Bucket storages
+// Join bucket storage
 typedef struct bucket_simple_1 {
-  simple_1_t buf[BUCKET_SIZE];
+  simple_1_t buf[BUCKET_SIZE_JOIN_SIMPLE_1];
   u32 head;
   u32 tail;
   u32 size;
 } bucket_simple_1_t;
 
 typedef struct bucket_simple_2 {
-  simple_2_t buf[BUCKET_SIZE];
+  simple_2_t buf[BUCKET_SIZE_JOIN_SIMPLE_2];
   u32 head;
   u32 tail;
   u32 size;
 } bucket_simple_2_t;
 
-bucket_simple_1_t init_bucket_simple_1 = {0};
-bucket_simple_2_t init_bucket_simple_2 = {0};
-
-GLOBAL_VAR(bucket_simple_1_t, init_bucket_simple_1);
-GLOBAL_VAR(bucket_simple_2_t, init_bucket_simple_2);
+static bucket_simple_1_t init_bucket_simple_1 = {0};
+static bucket_simple_2_t init_bucket_simple_2 = {0};
 
 // Result storage
 typedef struct join_result_simple_1_simple_2 {
-  simple_1_simple_2_t buf[RESULT_SIZE];
+  simple_1_simple_2_t buf[RESULT_SIZE_JOIN_SIMPLE_1_SIMPLE_2];
   u32 head;
   u32 tail;
   u32 size;
 } join_result_simple_1_simple_2_t;
 
-// GLOBAL_VAR(join_result_simple_1_simple_2_t, join_result_simple_1_simple_2)
-join_result_simple_1_simple_2_t join_result_simple_1_simple_2 = {0};
+/* FUNCTION DEFINITIONS: to prevent unknown identifiers when calling functions defined after. */
+
+static s32 insert_join_result_simple_1_simple_2(simple_1_t *l, simple_2_t *r);
+static s32 nested_loop_join_simple_1_simple_2();
+static s64 join_bucket_simple_2(bucket_simple_1_t *b);
+static s32 join_elt_simple_2(simple_1_t *e);
+
+s32 insert_bucket_simple_1(simple_1_t q);
+s32 join_delete_bucket_simple_1(simple_1_t q);
+void join_clear_buckets_simple_1();
+s32 join_insert_bucket_simple_2(simple_2_t q);
+s32 join_delete_bucket_simple_2(simple_2_t q);
+void join_clear_buckets_simple_2();
 
 /* JOIN SYNOPSES */
 
@@ -107,32 +107,27 @@ struct {
   __uint(map_flags, BPF_F_NO_PREALLOC);
 } join_buckets_simple_2 SEC(".maps");
 
-/* FUNCTION DEFINITIONS: to prevent unknown identifiers when calling functions defined after. */
+// Queue to represent pending work; necessary if nested loops of BUF_SIZE_1 X BUF_SIZE_2 can exceed
+// maximum insn count
+struct {
+  __uint(type, BPF_MAP_TYPE_QUEUE);
+  // TODO: see if we can estimate lower number
+  __uint(max_entries, MAX_ENTRIES_JOIN_SIMPLE_1);
+  __uint(map_flags, 0);
+  __uint(key_size, 0);
+  __uint(value_size, sizeof(s32));
+} join_bucket_queue_simple_1 SEC(".maps");
 
-static s32 insert_join_result_simple_1_simple_2(simple_1_t *l, simple_2_t *r);
-// static s32 nested_loop_join_simple_1_simple_2();
-// static s64 join_bucket_simple_2(bucket_simple_1_t *b);
-static s32 join_elt_simple_1(simple_2_t *e);
-static s32 join_elt_simple_2(simple_1_t *e);
-
-s32 join_insert_bucket_simple_1(simple_1_t q);
-s32 join_delete_bucket_simple_1(simple_1_t q);
-void join_clear_buckets_simple_1();
-s32 join_insert_bucket_simple_2(simple_2_t q);
-s32 join_delete_bucket_simple_2(simple_2_t q);
-void join_clear_buckets_simple_2();
-
-/* FUNCTION IMPLEMENTATIONS */
+join_result_simple_1_simple_2_t join_result_simple_1_simple_2 = {0};
 
 // Insert the result of a join into the result buffer.
-static __always_inline s32 insert_join_result_simple_1_simple_2(simple_1_t *l, simple_2_t *r) {
-  // GLOBAL_GET(join_result_simple_1_simple_2_t, join_result_simple_1_simple_2, jr);
-  if (join_result_simple_1_simple_2.size >= RESULT_SIZE) {
+static s32 insert_join_result_simple_1_simple_2(simple_1_t *l, simple_2_t *r) {
+  if (join_result_simple_1_simple_2.size >= RESULT_SIZE_JOIN_SIMPLE_1_SIMPLE_2) {
     WARN("join result full; dropping join result...");
     return ARRAY_FULL;
   }
   // Appease verifier
-  if (join_result_simple_1_simple_2.head >= RESULT_SIZE) {
+  if (join_result_simple_1_simple_2.head >= RESULT_SIZE_JOIN_SIMPLE_1_SIMPLE_2) {
     ERROR("BUG: join result head > join result size");
     return BUG_ERROR_CODE;
   }
@@ -151,14 +146,76 @@ static __always_inline s32 insert_join_result_simple_1_simple_2(simple_1_t *l, s
       .count_simple_2 = r->count,
       .tgid_simple_2 = r->tgid,
   };
-  // bpf_probe_read_kernel_str(join_result_simple_1_simple_2.buf[jr->head].comm_simple_1,
-  // TASK_COMM_LEN, l->comm);
-  // bpf_probe_read_kernel_str(join_result_simple_1_simple_2.buf[jr->head].comm_simple_2,
-  // TASK_COMM_LEN, r->comm);
+  bpf_probe_read_kernel_str(
+      join_result_simple_1_simple_2.buf[join_result_simple_1_simple_2.head].comm_simple_1,
+      TASK_COMM_LEN, l->comm);
+  bpf_probe_read_kernel_str(
+      join_result_simple_1_simple_2.buf[join_result_simple_1_simple_2.head].comm_simple_2,
+      TASK_COMM_LEN, r->comm);
 
   // Update pointers
-  join_result_simple_1_simple_2.head = (join_result_simple_1_simple_2.head + 1) % RESULT_SIZE;
+  join_result_simple_1_simple_2.head =
+      (join_result_simple_1_simple_2.head + 1) % RESULT_SIZE_JOIN_SIMPLE_1_SIMPLE_2;
   join_result_simple_1_simple_2.size += 1;
+
+  return 0;
+}
+
+// Callback to process each simple_1 bucket
+static s64 __nested_loop_join_simple_1_simple_2_callback(struct bpf_map *m, s32 *pid,
+                                                         bucket_simple_1_t *b, void *unused) {
+  // For each bucket, join with simple_2 buckets
+  return join_bucket_simple_2(b);
+}
+
+// Perform nested loop join. Return 0 on success, an error code on failure.
+static s32 nested_loop_join_simple_1_simple_2() {
+  return bpf_for_each_map_elem(&join_buckets_simple_1,
+                               __nested_loop_join_simple_1_simple_2_callback, NULL, 0);
+}
+
+// Callback for bpf_loop iterations.
+static s64 __join_bucket_simple_2_callback(u32 i, bucket_simple_1_t *b) {
+  // Get real index from i
+  i = (i + b->tail) % BUCKET_SIZE_JOIN_SIMPLE_1;
+  // If at end of loop, halt
+  if (i == b->head) {
+    return 1;
+  }
+  // Join element with simple_2 buckets
+  if (!join_elt_simple_2(&b->buf[i])) {
+    // Halt execution if individual element join fails
+    return 1;
+  }
+  return 0;
+}
+
+// Joins a bucket_simple_1_t bucket to simple_2 buckets.
+static s64 join_bucket_simple_2(bucket_simple_1_t *b) {
+  return bpf_loop(b->size, __join_bucket_simple_2_callback, b, 0);
+}
+
+typedef struct join_elt_simple_2_ctx {
+  bucket_simple_2_t *b;
+  // Element to join on
+  simple_1_t *e;
+} join_elt_simple_2_ctx_t;
+
+// Callback for bpf_loop iterations.
+static s64 __join_elt_simple_2_callback(u32 i, join_elt_simple_2_ctx_t *ctx) {
+  // Get real index from i
+  i = (i + ctx->b->tail) % BUCKET_SIZE_JOIN_SIMPLE_2;
+  // If at end of loop, halt
+  if (i == ctx->b->head) {
+    return 1;
+  }
+  // Otherwise, check if equal; if so, insert
+  if (ctx->e->pid == ctx->b->buf[i].pid) {
+    s32 res = insert_join_result_simple_1_simple_2(ctx->e, &ctx->b->buf[i]);
+    if (res != 0) {
+      return 1;
+    }
+  }
 
   return 0;
 }
@@ -169,68 +226,17 @@ static s32 join_elt_simple_2(simple_1_t *e) {
   if (!b) {
     return 0;
   }
+  join_elt_simple_2_ctx_t ctx = {
+      .b = b,
+      .e = e,
+  };
+  return bpf_loop(b->size, __join_elt_simple_2_callback, &ctx, 0);
 
-  // Appease verifier
-  if (b->size > BUCKET_SIZE) {
-    ERROR("BUG: bucket size > max bucket size");
-    return BUG_ERROR_CODE;
-  }
-  // Iterate through bucket and add any values that match (need to check, since hash collisions
-  // could occur)
-  for (u32 i = 0; i < b->size; i++) {
-    // Get real index from i
-    i = (i + b->tail) % BUCKET_SIZE;
-    // Otherwise, check if equal
-    if (e->pid == b->buf[i].pid) {
-      // TODO: add individual processing logic (e.g. filters, maps) here?
-
-      // Insert into result
-      s32 res = insert_join_result_simple_1_simple_2(e, &b->buf[i]);
-      if (res != 0) {
-        return res;
-      }
-    }
-  }
-
-  return 0;
-}
-
-// Joins a single element from simple_2 to simple_1.
-static s32 join_elt_simple_1(simple_2_t *e) {
-  bucket_simple_1_t *b = (bucket_simple_1_t *)bpf_map_lookup_elem(&join_buckets_simple_1, &e->pid);
-  if (!b) {
-    return 0;
-  }
-
-  // Appease verifier
-  if (b->size > BUCKET_SIZE) {
-    ERROR("BUG: bucket size > max bucket size");
-    return BUG_ERROR_CODE;
-  }
-  // Iterate through bucket and add any values that match (need to check, since hash collisions
-  // could occur)
-  for (u32 i = 0; i < b->size; i++) {
-    // Get real index from i
-    i = (i + b->tail) % BUCKET_SIZE;
-    // If at end of loop, break out
-    if (i == b->head) {
-      break;
-    }
-    // Otherwise, check if equal
-    if (e->pid == b->buf[i].pid) {
-      // TODO: add individual processing logic (e.g. filters, maps) here?
-
-      // Insert into result
-      s32 res = insert_join_result_simple_1_simple_2(&b->buf[i], e);
-      if (res != 0) {
-        return res;
-      }
-    }
-  }
+  // TODO: add individual processing logic (e.g. filters, maps) here?
 }
 
 // Inserts q to simple_1's join bucket. Returns 0 on success, an error code on failure.
-s32 join_insert_bucket_simple_1(simple_1_t q) {
+s32 insert_bucket_simple_1(simple_1_t q) {
   // Find join bucket of q
   // TODO: template the pid member access
   bucket_simple_1_t *b = (bucket_simple_1_t *)bpf_map_lookup_elem(&join_buckets_simple_1, &q.pid);
@@ -244,19 +250,19 @@ s32 join_insert_bucket_simple_1(simple_1_t q) {
   }
 
   // Try to insert into bucket
-  if (b->size >= BUCKET_SIZE) {
+  if (b->size >= BUCKET_SIZE_JOIN_SIMPLE_1) {
     // TODO: see what to do if full
     WARN("failed to insert into simple_1 join bucket for %d: full", q.pid);
     return ARRAY_FULL;
   }
 
   // Appease verifier
-  if (b->head >= BUCKET_SIZE) {
+  if (b->head >= BUCKET_SIZE_JOIN_SIMPLE_1) {
     ERROR("BUG: bucket head >= bucket size");
     return BUG_ERROR_CODE;
   }
   b->buf[b->head] = q;
-  b->head = (b->head + 1) % BUCKET_SIZE;
+  b->head = (b->head + 1) % BUCKET_SIZE_JOIN_SIMPLE_1;
   b->size += 1;
 
   return 0;
@@ -274,7 +280,7 @@ s32 join_delete_bucket_simple_1(simple_1_t q) {
 
   // Try to remove from bucket
   // No actual clearing necessary, just increment tail
-  b->tail = (b->tail + 1) % BUCKET_SIZE;
+  b->tail = (b->tail + 1) % BUCKET_SIZE_JOIN_SIMPLE_1;
   // Bounds check
   if (b->size == 0) {
     ERROR("BUG: trying to remove from already empty bucket for simple_1");
@@ -318,19 +324,19 @@ s32 join_insert_bucket_simple_2(simple_2_t q) {
   }
 
   // Try to insert into bucket
-  if (b->size >= BUCKET_SIZE) {
+  if (b->size >= BUCKET_SIZE_JOIN_SIMPLE_2) {
     // TODO: see what to do if full
     WARN("failed to insert into simple_2 join bucket for %d: full", q.pid);
     return ARRAY_FULL;
   }
 
   // Appease verifier
-  if (b->head >= BUCKET_SIZE) {
+  if (b->head >= BUCKET_SIZE_JOIN_SIMPLE_2) {
     ERROR("BUG: bucket head >= bucket size");
     return BUG_ERROR_CODE;
   }
   b->buf[b->head] = q;
-  b->head = (b->head + 1) % BUCKET_SIZE;
+  b->head = (b->head + 1) % BUCKET_SIZE_JOIN_SIMPLE_2;
   b->size += 1;
 
   return 0;
@@ -348,7 +354,7 @@ s32 join_delete_bucket_simple_2(simple_2_t q) {
 
   // Try to remove from bucket
   // No actual clearing necessary, just increment tail
-  b->tail = (b->tail + 2) % BUCKET_SIZE;
+  b->tail = (b->tail + 2) % BUCKET_SIZE_JOIN_SIMPLE_2;
   // Bounds check
   if (b->size == 0) {
     ERROR("BUG: trying to remove from already empty bucket for simple_2");

@@ -33,5 +33,9 @@ typedef struct simple_1 {
   s32 ns_pid;                // not rly useful but 🤷 for sake of demonstration
 } simple_1_t;                // __attribute__((packed));
 
-const int s = sizeof(simple_1_t);
+
+// Flag to determine whether to do batch vs. individual processing (i.e. on every window emit,
+// or only on steps)
+const volatile bool batch_process = false;
+
 /* SYNOPSES DEFINITIONS */

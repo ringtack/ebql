@@ -1,10 +1,11 @@
 mod test {
-    include!(concat!(env!("OUT_DIR"), "/simple.skel.rs"));
+    include!(concat!(env!("OUT_DIR"), "/simple_1.skel.rs"));
 }
 
 use core::str;
 use std::time::Duration;
 
+use anyhow::{bail, Result};
 use ebql_prototype::{
     bpf_gen::{BpfCompiler, StructRepr},
     bpf_select::BpfSelect,
@@ -12,11 +13,37 @@ use ebql_prototype::{
 };
 use libbpf_rs::{
     skel::{OpenSkel, SkelBuilder},
-    RingBufferBuilder,
+    PrintLevel, RingBufferBuilder,
 };
 use test::*;
 
+fn bump_memlock_rlimit() -> Result<()> {
+    let rlimit = libc::rlimit {
+        rlim_cur: 128 << 20,
+        rlim_max: 128 << 20,
+    };
+    if unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlimit) } != 0 {
+        bail!("Failed to increase rlimit");
+    }
+    Ok(())
+}
+
+fn print_to_log(level: PrintLevel, msg: String) {
+    match level {
+        PrintLevel::Debug => log::debug!("{}", msg),
+        PrintLevel::Info => log::info!("{}", msg),
+        PrintLevel::Warn => log::warn!("{}", msg),
+    }
+}
+
 fn main() {
+    log::set_max_level(log::LevelFilter::Trace);
+    env_logger::builder()
+        .filter(None, log::LevelFilter::Trace)
+        .init();
+    libbpf_rs::set_print(Some((PrintLevel::Debug, print_to_log)));
+
+    bump_memlock_rlimit().unwrap();
     /*
     Suppose we want the following query:
 
@@ -90,8 +117,9 @@ fn main() {
     let process_event = create_event_handler(s_repr);
 
     // Initialize BPF skeleton program
-    let skel_builder = SimpleSkelBuilder::default();
-    let open_skel = skel_builder.open().unwrap();
+    let skel_builder = Simple1SkelBuilder::default();
+    let mut open_skel = skel_builder.open().unwrap();
+    open_skel.progs_mut().bpf_simple_1().set_log_level(1);
     let mut skel = open_skel.load().unwrap();
 
     // Create ring buf handler
@@ -101,7 +129,7 @@ fn main() {
     let rb = builder.build().unwrap();
 
     // Attach program to event
-    let link = skel.progs_mut().bpf_query_simple().attach().unwrap();
+    let link = skel.progs_mut().bpf_simple_1().attach().unwrap();
 
     // Continuously poll until stopped
     while rb.poll(Duration::from_secs(1)).is_ok() {

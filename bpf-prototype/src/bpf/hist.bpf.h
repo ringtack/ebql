@@ -40,6 +40,27 @@ typedef struct hist {
   u64 count;
 } hist_t;
 
+hist_t hist = {
+    .buckets = {{0, 5, 0}, {5, 10, 0}, {10, 15, 0}, {15, 20, 0}},
+    .count = 0,
+};
+
+// Add logic for optimizing tumbling windows aggregation
+// {{ if window.is_tumbling }}
+hist_t hist_next = {
+    .buckets = {{0, 5, 0}, {5, 10, 0}, {10, 15, 0}, {15, 20, 0}},
+    .count = 0,
+};
+
+/**
+ * Copies over next histogram buffer to current histogram, and reset next histogram.
+*/
+static __always_inline void tumble_hist() {
+  hist = hist_next;
+  for (u32 b = 0; b < N_BUCKETS; b++) hist_next.buckets[b].count = 0;
+}
+// {{ endif }}
+
 // TODO: codegen to initialize buckets
 
 // {{ if hist.is_log }}
@@ -84,15 +105,15 @@ static void __always_inline hist_delete(hist_t *h, u64 v) {
 
 // Computes the q quantile (where 0 < q < 100)
 // TODO: see if BPF supports fp computations
-static u64 __always_inline hist_quantile(hist_t *h, u64 q) {
+static s64 __always_inline hist_quantile(hist_t *h, u64 q) {
   // Appease verifier
   if (!h) {
     ERROR("BUG: h is null");
-    return BUG_ERROR_CODE;
+    return -BUG_ERROR_CODE;
   }
   if (q == 0 || q > 100) {
     ERROR("q (%lu) must be in (0, 100).", q);
-    return EINVAL;
+    return -EINVAL;
   }
   // If q >= 50, iterate from top down
   u64 total = h->count;
@@ -145,5 +166,5 @@ static u64 __always_inline hist_quantile(hist_t *h, u64 q) {
     }
   }
   ERROR("histogram didn't return value\n");
-  return EINVAL;
+  return -EINVAL;
 }

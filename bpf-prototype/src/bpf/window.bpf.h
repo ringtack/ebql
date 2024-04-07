@@ -78,8 +78,21 @@ static __always_inline simple_1_t* expired_start() {
 }
 
 /**
+ * Gets the start of the valid elements. This has the same logic as expired_start, but must be called
+ * *after* being flushed.
+ */
+static __always_inline simple_1_t* elements_start() {
+  GLOBAL_GET(window_t, window, w);
+  return &w->buf[w->tail];
+}
+
+/**
  * Appends an element to the window. If elements are expired, copy over next buffer to window, then
- * clears next buffer. Returns 1 if window will be flushed, 0 if there's more space, and error code on failure.
+ * clears next buffer. Returns:
+ * - # of elements to flush if window has expired elements
+ * - 1 if the element goes into the next step buffer
+ * - 0 if the element goes into the window
+ * - Error code on failure
  *
  * NOTE: Be sure to iterate through expired elements with expired_iter *before* calling window_add;
  * otherwise, expired elements may be overwritten (for tumbling windows).
@@ -87,7 +100,7 @@ static __always_inline simple_1_t* expired_start() {
  * TODO: to inline, or not to inline?
  * TODO: is it worth to convert q into a pointer too? in case queries get large
  */
-static s32 __always_inline window_add(simple_1_t q) {
+static __always_inline s32 window_add(simple_1_t q) {
   GLOBAL_GET(window_t, window, w);
   GLOBAL_GET(next_t, next, n);
 
@@ -95,53 +108,40 @@ static s32 __always_inline window_add(simple_1_t q) {
   // COUNT WINDOW COMPUTATION
   if (WINDOW_SIZE % STEP != 0) {
     ERROR("For now (i.e. until I can figure out verifier), STEP must be divisible by WINDOW_SIZE");
-    return UNIMPLEMENTED;
+    return -UNIMPLEMENTED;
   }
   // If window not full, append to end of window
   if (w->size < WINDOW_SIZE) {
     // Bounds check for verifier
     if (w->head >= WINDOW_SIZE) {
       ERROR("BUG: window->head >= WINDOW_SIZE");
-      return BUG_ERROR_CODE;
+      return -BUG_ERROR_CODE;
     }
     w->buf[w->head] = q;
     // Support wrap-around
     w->head = (w->head + 1) % WINDOW_SIZE;
     w->size++;
+    return 0;
   } else {
     // Otherwise, append to end of step
     // Bounds check for verifier
     if (n->idx >= STEP) {
       ERROR("BUG: next->idx >= STEP");
-      return BUG_ERROR_CODE;
+      return -BUG_ERROR_CODE;
     }
     n->buf[n->idx] = q;
     n->idx++;
     // If step becomes full, migrate new elements to buffer
     if (n->idx == STEP) {
-      // Bounds check for verifier
-      if (w->head > WINDOW_SIZE - STEP) {
-        ERROR("BUG: window->head >= WINDOW_SIZE");
-        return BUG_ERROR_CODE;
-      }
-      bpf_probe_read_kernel(&w->buf[w->head], STEP * sizeof(simple_1_t), n->buf);
-      // Advance tail and head
-      w->tail = (w->tail + STEP) % WINDOW_SIZE;
-      w->head = (w->head + STEP) % WINDOW_SIZE;
-      // Reset next index
-      n->idx = 0;
-
-      // Note that in a count window, once the window is full the size never decreases; items stay
-      // in the window until they're pushed out by the next step, but the total amount doesn't
-      // change
-      // expired = STEP;
+      return STEP;
     }
+    return 1;
   }
   // {{ else }}
   // TIME WINDOW COMPUTATION
   if (STEP != INTERVAL) {
     ERROR("For now (i.e. until I can figure out verifier), time windows must be tumbling");
-    return UNIMPLEMENTED;
+    return -UNIMPLEMENTED;
   }
   // Since tumbling window, oldest element is always elt_0
   u64 t_since_oldest = q.time - w->buf[0].time;
@@ -151,44 +151,86 @@ static s32 __always_inline window_add(simple_1_t q) {
     // TODO: figure out better thing to do here; I think could have a global pool of maps as backup?
     if (w->size >= WINDOW_SIZE) {
       WARN("Window is full; dropping new event...");
-      return ARRAY_FULL;
+      return -ARRAY_FULL;
     }
     w->buf[w->head] = q;
     // Don't need to account for wrap around, since if size is full we just don't add
     w->head++;
     w->size++;
+    return 0;
   } else {
-    // Otherwise, first check if more than (INTERVAL+STEP) time has elapsed since the oldest element
-    // in the window; if so, copy over next buffer to window and clear next buffer
-    if (t_since_oldest > INTERVAL + STEP) {
-      // All elements in window are now expired
-      // Appease verifier
-      if (n->idx > WINDOW_SIZE) {
-        ERROR("BUG: windonext->idx > WINDOW_SIZE");
-        return BUG_ERROR_CODE;
-      }
-      bpf_probe_read_kernel(w->buf, n->idx * sizeof(simple_1_t), n->buf);
-      // Update head and window size
-      w->size = w->head = n->idx;
-      // Reset next buffer back to beginning (note that in tumbling windows, tail = 0 always, so
-      // this isn't actually necessary)
-      w->tail = n->idx = 0;
+    // Only add to window if not already full
+    // TODO: figure out better thing to do here
+    if (n->idx >= WINDOW_SIZE) {
+      WARN("Next step buffer is full; dropping new event...");
     } else {
-      // Check only necessary if we didn't step; otherwise next_idx goes back to 0
-      // TODO: figure out better thing to do here
-      if (n->idx >= WINDOW_SIZE) {
-        WARN("Next step buffer is full; dropping new event...");
-        return ARRAY_FULL;
-      }
+      // Add to next window
+      n->buf[n->idx] = q;
+      // No modulo needed, since copying over functionally clears w->next, so it'll always be <=
+      // WINDOW_SIZE
+      n->idx++;
     }
-    // Add to next window
-    n->buf[n->idx] = q;
-    // No modulo needed, since copying over functionally clears w->next
-    n->idx++;
+    // If more than (INTERVAL+STEP) time has elapsed since the oldest element in the window, copy
+    // over next buffer to window and clear next buffer
+    // NOTE: in the worst case of the window being full, this permits one less element than
+    // maximally possible, since it'd be optimal to flush before inserting. However, this makes the
+    // logic much more annoying, so we'll just go with this for now.
+    if (t_since_oldest > INTERVAL + STEP) {
+      // Since time windows must be tumbling, all elements in the window are now expired
+      return w->size;
+    }
+    return 1;
   }
   // {{ endif }}
 
   return 0;
+}
+
+/**
+ * Flushes the window. Returns the number of new valid elements in the window on success, a negative
+ * error code on failure.
+*/
+static s32 __always_inline window_flush() {
+  GLOBAL_GET(window_t, window, w);
+  GLOBAL_GET(next_t, next, n);
+
+  // {{ if window.is_count }}
+  // Bounds check for verifier
+  if (w->head > WINDOW_SIZE - STEP) {
+    ERROR("BUG: window->head >= WINDOW_SIZE");
+    return -BUG_ERROR_CODE;
+  }
+  bpf_probe_read_kernel(&w->buf[w->head], STEP * sizeof(simple_1_t), n->buf);
+  // Advance tail and head
+  w->tail = (w->tail + STEP) % WINDOW_SIZE;
+  w->head = (w->head + STEP) % WINDOW_SIZE;
+  // Reset next index
+  n->idx = 0;
+
+  // Note that in a count window, once the window is full the size never decreases; items stay
+  // in the window until they're pushed out by the next step, but the total amount doesn't
+  // change
+
+  // {{ else }}
+
+  // All elements in window are now expired
+  // Appease verifier
+  if (n->idx > WINDOW_SIZE) {
+    ERROR("BUG: next->idx > WINDOW_SIZE");
+    return -BUG_ERROR_CODE;
+  }
+
+  bpf_probe_read_kernel(w->buf, n->idx * sizeof(simple_1_t), n->buf);
+  // Update head and window size to # of new elements
+  w->size = w->head = n->idx;
+  // Reset next buffer back to beginning (note that in tumbling windows, tail = 0 always, so
+  // this isn't actually necessary)
+  w->tail = n->idx = 0;
+
+  // {{ endif }}
+
+  // Return new window size
+  return w->size;
 }
 
 /**

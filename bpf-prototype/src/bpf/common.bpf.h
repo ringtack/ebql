@@ -30,11 +30,11 @@ const u32 zero = 0;
     __uint(max_entries, 1);           \
   } name##_var SEC(".maps");
 
-#define GLOBAL_GET(var_type, name, var)                   \
+#define GLOBAL_GET(var_type, name, var)                                \
   var_type *var = (var_type *)bpf_map_lookup_elem(&name##_var, &zero); \
-  if (!var) {                                                 \
-    ERROR("BUG: blud should exist"); \
-    return BUG_ERROR_CODE; \
+  if (!var) {                                                          \
+    ERROR("BUG: blud should exist");                                   \
+    return BUG_ERROR_CODE;                                             \
   }
 
 // Compute array size

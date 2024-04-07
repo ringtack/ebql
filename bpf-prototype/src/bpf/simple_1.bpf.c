@@ -6,10 +6,15 @@
 
 #include "common.bpf.h"
 #include "math.bpf.h"
-#include "hist.bpf.h"
 #include "simple_1.bpf.h"
+
 #include "window.bpf.h"
-// #include "join_simple_1_simple_2.bpf.h"
+#include "hist.bpf.h"
+#include "avg.bpf.h"
+#include "distinct_simple_1.bpf.h"
+
+// #include "join.bpf.h"
+#include "distinct_join.bpf.h"
 
 // *** DEFINITIONS SECTION *** //
 
@@ -19,22 +24,10 @@
 #define BATCH_SIZE 256
 #define EMIT_TOUT_MS 100
 
-// typedef struct query_simple {
-// 	u64 time;
-//   u64 pfn;
-//   u64 i_ino;
-//   u64 count;  // NOTE: from select; will need to analyze selects in query plan to find new emissions
-//   u32 s_dev;
-//   s32 pid;
-//   s32 tgid;
-//   char comm[TASK_COMM_LEN]; // pre-defined by vmlinux.h
-//   s32 ns_pid; // not rly useful but 🤷 for sake of demonstration
-// } query_simple_t;  // __attribute__((packed));
-
 // Ringmap to communicate with userspace
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, BATCH_SIZE * sizeof(simple_1_t)); // this is in bytes, so get actual size
+	__uint(max_entries, RESULT_SIZE * sizeof(simple_1_simple_2_t));
 } ring_buf_8uf3Z SEC(".maps");
 
 // *** GLOBALS SECTION *** //
@@ -42,20 +35,48 @@ struct {
 // total event count (user-defined state!)
 u64 count = 0;
 
-hist_t hist = {
-    .buckets = {{0, 5, 0}, {5, 10, 0}, {10, 15, 0}, {15, 20, 0}},
-    .count = 0,
-};
-
 // TODO: should prob have another section for flags like these
 const volatile s32 target_pid = 0;
 
 // *** CODE SECTION *** //
+
+/**
+ * Callback on window flushes. Executed only for individual processing.
+ */
+static s64 __window_flush_callback_simple_1(u32 i, window_t *w) {
+  // Stop if i >= w->size
+  if (i >= w->size) {
+    return 1;
+  }
+  // Get actual offset; although mod isn't necessary, do to appease verifier
+  i = (i + w->tail) % WINDOW_SIZE;
+
+  // Apply processing on w->buf[i]
+
+  // Joins:
+
+  // Delete from its bucket
+  join_delete_bucket_simple_1(w->buf[i]);
+  // signal to user-space to delete these records from join result
+  // TODO: make join deleted result using ts1, ts2
+
+  // Aggregations:
+
+  // delete from histogram
+  hist_delete(&hist, w->buf[i].pfn);
+
+  // Count / mean: update
+  // Distinct: we have distinct record the latest seen value. If this value == last seen distinct
+  // value, then no other distinct values seen, so remove
+
+  return 0;
+}
+
 // TODO: see how tracepoint types are defined. Looks like it's trace_event_raw_XXX, but e.g. it's
 // different for syscalls.
 SEC("tracepoint/filemap/mm_filemap_add_to_page_cache")
 u32 bpf_simple_1(struct trace_event_raw_mm_filemap_op_page_cache * ctx) {
-	bpf_printk("got event\n");
+	INFO("got event");
 
   // Preliminaries
   simple_1_t q = {};
@@ -73,6 +94,7 @@ u32 bpf_simple_1(struct trace_event_raw_mm_filemap_op_page_cache * ctx) {
   ret = bpf_get_current_comm(&q.comm, sizeof(q.comm));
   if (ret < 0) {
     bpf_printk("got error in getting comm: %ld", ret);
+    return 1;
   }
 
   // SELECT: for each new arg, compute its value
@@ -82,8 +104,6 @@ u32 bpf_simple_1(struct trace_event_raw_mm_filemap_op_page_cache * ctx) {
 
   // - for other stuff (i.e. using source args -> new args), use bpf helpers / regular
   // computation
-  // TODO: figure out how to represent bpf helper funcs; probably some parsing of
-  // include/uapi/linux/bpf.h?
   struct bpf_pidns_info nsd;
   ret = bpf_get_ns_current_pid_tgid(ctx->s_dev, ctx->i_ino, &nsd, sizeof(nsd));
   if (ret != 0) {
@@ -100,37 +120,115 @@ u32 bpf_simple_1(struct trace_event_raw_mm_filemap_op_page_cache * ctx) {
   // MAP: apply pre-defined set of arithmetic/string processing functions
   q.time /= MS_TO_NS;
 
-  // Insert into window
-  u32 expired = window_add(q);
-  // If not a step, return
-  if (expired == 0) {
-    return 0;
+  // Add element to window
+  ret = window_add(q);
+  if (ret < 0) {
+    ERROR("failed to add to window (%ld)", ret);
+    return 1;
   }
 
-  // Otherwise, step happened, so process further functions
-  // TODO: add individual processing on tumbling windows, so that tail latencies don't skyrocket
+  // {{ if window.is_tumbling }}
+  // TODO: benchmark individual vs. batch processing (batch prob faster since cache locality, but
+  // might incur high tail latencies)
+  // If individual processing:
 
-  // Joins!!!
+  // If ret == 0, then element went to window, so update current aggregations
+  if (ret == 0) {
+    // Aggregations:
 
-  // Appease verifier
-  // if (expired >= STEP) {
-  //   ERROR("BUG: expired > step");
-  //   return 0;
-  // }
+    // Insert into histogram
+    hist_insert(&hist, q.pfn);
 
-  // For each expired element, process into join buffer
-  // for (int i = 0; i < expired; i++) {
-  //   insert_bucket_simple_1(window.expired[i]);
-  // }
+    // Update average
+    avg_insert(q.pfn, q.time);
 
-  // Compute join results
-  // nested_loop_join_simple_1_simple_2();
+    // Update distinct
+    distinct_insert_simple_1(q);
 
-  // aggregations!!!
-  hist_insert(&hist, q.pfn);
-  hist_quantile(&hist, 99);
+    // Joins:
+    // Insert new element into bucket
+    // join_insert_bucket_simple_1(q);
+    // Compute new join results with other query
+    // join_elt_simple_2(&q);
+  } else if (ret == 1) {
+    // Otherwise, if ret == 1, then element went to next buffer, so update next aggregations
 
-  // AGGREGATE: TODO: figure out how to do in kernel space without wasting memory...
+    // Aggregations:
+
+    // Insert into next histogram
+    hist_insert(&hist_next, q.pfn);
+
+    // Update average
+    avg_insert_next(q.pfn, q.time);
+
+    // Update distinct
+    // Note: since distinct joins build on this, it suffices for that too
+    distinct_insert_next_simple_1(q);
+
+    // Joins:
+    // TODO: add _next processing
+    // Insert new element into bucket
+    // join_insert_bucket_simple_1(q);
+    // Compute new join results with other query
+    // join_elt_simple_2(&q);
+  }
+
+  // If elements expired, trigger aggregation computation
+  if (ret > 1) {
+    // {{ if window.is_tumbling }}
+    // Aggregations:
+
+    // tumble hist
+    tumble_hist();
+
+    // tumble average
+    tumble_avg();
+
+    // tumble distinct
+    // NOTE: for distinct joins, this also functions to tumble the join synopses
+    tumble_distinct();
+
+    // {{ else }}
+
+    // See below
+
+    // {{ endif }}
+
+    // Flush window
+    ret = window_flush();
+    if (ret < 0) {
+      ERROR("failed to flush window: %d", ret);
+      return 1;
+    }
+
+    // Compute new aggregations
+
+    // Histogram:
+    hist_quantile(&hist, 99);
+
+    // Distinct joins:
+
+    // Compute number of distinct joins
+    u32 n_results = distinct_join_simple_1_simple_2_count();
+    if (n_results > 0) {
+      // Appease verifier
+      if (n_results >= RESULT_SIZE) {
+        WARN("number of distinct join results (%lu) exceeds max capacity (%lu); truncating...",
+             n_results, RESULT_SIZE);
+        n_results = RESULT_SIZE;
+      }
+      simple_1_simple_2_t *buf =
+          bpf_ringbuf_reserve(&ring_buf_8uf3Z, n_results * sizeof(simple_1_simple_2_t), 0);
+      if (!buf) {
+        ERROR("failed to allocate space on result ringbuf");
+        return 1;
+      }
+
+      distinct_join_simple_1_simple_2(buf, n_results);
+
+      bpf_ringbuf_submit(buf, 0);
+    }
+  }
 
   return 0;
 }
@@ -138,3 +236,45 @@ u32 bpf_simple_1(struct trace_event_raw_mm_filemap_op_page_cache * ctx) {
 
 // *** LICENSE *** //
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
+
+
+// For step processing (not tumbling), need to iterate through expired elements, since synopses
+// aren't built up beforehand
+/*
+// Remove expired elements from synopses
+simple_1_t *w_exp = expired_start();
+for (u32 i = 0; i < ret; i++) {
+  // Joins:
+
+  // delete from join buckets
+  join_delete_bucket_simple_1(w_exp[i]);
+
+  // signal to user-space to delete these records from join result
+  // TODO: make join deleted result using ts1, ts2
+
+  // Aggregations:
+
+  // delete from histogram
+  hist_delete(&hist, w_exp[i].pfn);
+
+  // delete from avg/distinct
+
+}
+
+// If batch processing, only now update stateful synopses
+if (batch_process) {
+  simple_1_t *w = elements_start();
+  for (u32 i = 0; i < ret; i++) {
+    // Joins:
+
+    // Insert element into bucket
+    join_insert_bucket_simple_1(w[i]);
+
+    // Insert elements into histograms
+    hist_insert(&hist, q.pfn);
+  }
+
+  // Compute new join result
+  // TODO: take nested loop join from join_next
+}
+*/
