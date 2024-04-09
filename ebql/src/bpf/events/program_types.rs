@@ -1,7 +1,3 @@
-pub trait Event {
-    fn program_type() -> ProgramType;
-}
-
 /// BPF program types. Details can be found at https://docs.kernel.org/bpf/libbpf/program_types.html.
 /// TODO: support more program types
 pub enum ProgramType {
