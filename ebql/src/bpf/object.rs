@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, path::PathBuf, process::Command, thread, time::Duration};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use crossbeam::channel::{unbounded, Receiver};
 use libbpf_rs::{ObjectBuilder, RingBufferBuilder};
 

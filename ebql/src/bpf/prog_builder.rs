@@ -13,7 +13,6 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use libc::__UT_LINESIZE;
 
 use super::{Field, MapDef, Struct};
 use crate::{

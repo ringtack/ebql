@@ -19,9 +19,5 @@ pub mod program;
 pub mod types;
 
 use bpf_struct::*;
-use events::*;
 use map::*;
-use object::*;
-use prog_builder::*;
-use program::*;
 use types::*;

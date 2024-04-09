@@ -1,6 +1,6 @@
 //! Kernel eBPF event interface types.
 
-use std::{rc::Rc, str::FromStr};
+use std::{str::FromStr};
 
 use anyhow::Result;
 
@@ -16,7 +16,6 @@ pub mod tracepoints;
 pub mod system;
 
 use program_types::*;
-use system::*;
 use tracepoints::*;
 
 /// Event trait.

@@ -6,7 +6,7 @@ use crossbeam::channel::Receiver;
 use libbpf_rs::Link;
 
 use super::Struct;
-use crate::{map::RingBuf, prog_builder::Expr, record_batch::RecordBatch, schema::schema::Schema};
+use crate::{map::RingBuf, prog_builder::Expr, record_batch::RecordBatch};
 
 /// Handle over an individual BPF program.
 pub struct Program {
