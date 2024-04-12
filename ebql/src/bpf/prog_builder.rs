@@ -86,6 +86,8 @@ pub struct BpfCodeBuilder<S = Base> {
     /// Output file name (without extensions; this will add the
     /// `.bpf.c`/`.bpf.h` automatically)
     name: String,
+    /// Section in which this program belongs to
+    section: String,
 
     /// Buffers for header file (name.bpf.h). The only included file will be
     /// `common.bpf.h`, which should have all relevant definitions from
@@ -131,9 +133,10 @@ pub struct BpfCodeBuilder<S = Base> {
 }
 
 impl BpfCodeBuilder<Base> {
-    pub fn new(name: String) -> Self {
+    pub fn new(name: String, section: String) -> Self {
         let mut cb = Self {
             name: name.clone(),
+            section,
             macros_buf: Vec::new(),
             structs_buf: Vec::new(),
             maps_buf: Vec::new(),
@@ -154,8 +157,8 @@ impl BpfCodeBuilder<Base> {
         };
 
         // Pre-initialization: always include own header, "{name}.bpf.h"
-        let hdr = format!("{}.bpf.h", name);
-        cb.write_includes(&hdr, false, Some("common bpf helpers"));
+        let hdr = format!("{}.bpf.h", &name);
+        cb.write_includes(&hdr, false, Some(&format!("{name}'s definitions")));
 
         cb
     }
@@ -163,20 +166,17 @@ impl BpfCodeBuilder<Base> {
     /// Adds an external includes file to the program by creating a temporary
     /// includes file from the provided include file, then adding it to the
     /// program's include list.
-    pub fn add_external_includes<P: AsRef<Path>>(&mut self, path: P) -> Result<&mut Self> {
-        // Read includes file into str
-        let includes = fs::read_to_string(path.as_ref())?;
-        // Extract file's name, then create tmp header name
-        let name = path.as_ref().file_prefix().unwrap().to_str().unwrap();
-        let hdr_name = format!("{}_{}.bpf.h", name, self.name);
+    pub fn add_external_includes<S: AsRef<str>>(&mut self, name: S, includes: String) -> &mut Self {
+        // Create header name from include name and program name
+        let hdr_name = format!("{}_{}.bpf.h", name.as_ref(), self.name);
 
         // Insert header into external includes
         self.ext_includes.insert(hdr_name.clone(), includes);
 
         // Write includes to buffer
-        let comment = format!("External includes ({name})");
+        let comment = format!("External includes ({})", name.as_ref());
         self.write_includes(&hdr_name, false, Some(&comment));
-        Ok(self)
+        self
     }
 
     /// Writes a struct to the program header definition.
@@ -216,11 +216,14 @@ impl BpfCodeBuilder<Base> {
     pub fn write_ring_buffer(self, rb_def: &RingBuf) -> Self {
         let mut cb = self.start_map();
         let map_type = MapType::RingBuffer.to_string();
-        let max_entries = (rb_def.max_entries * rb_def.s_repr.sz).to_string();
+        let max_entries = (rb_def.max_entries * rb_def.s_repr.sz as u64).to_string();
         cb.write_attr(__UINT, "type", &map_type);
         cb.write_attr(__UINT, "max_entries", &max_entries);
-        let mut cb = cb.close(&rb_def.name);
+        let cb = cb.close(&rb_def.name);
+        // Write output schema in ring buf to header definition
+        let mut cb = cb.write_struct(&rb_def.s_repr);
         cb.ring_buffer = Some(rb_def.clone());
+
         cb
     }
 
@@ -275,7 +278,7 @@ impl BpfCodeBuilder<Base> {
     /// Starts a struct definition. The user must close the struct definition
     /// using self.close().
     pub fn start_struct(mut self) -> BpfCodeBuilder<StructConstruction> {
-        self.structs_buf.extend("typedef struct {{".as_bytes());
+        self.structs_buf.extend("typedef struct {".as_bytes());
         self.structs_buf.push(NL);
 
         // Convert into different type
@@ -303,17 +306,11 @@ impl BpfCodeBuilder<Base> {
 
     /// Starts a BPF program function definition. The user must close the
     /// function definition using self.close().
-    pub fn start_function(
-        mut self,
-        section: &str,
-        return_type: &str,
-        name: &str,
-        args: &[Expr],
-    ) -> BpfCodeBuilder<BodyConstruction> {
+    pub fn start_function(mut self, args: &[Expr]) -> BpfCodeBuilder<BodyConstruction> {
         // Construct function header
-        let mut str = format!(r#"SEC("{}")"#, section);
+        let mut str = format!(r#"SEC("{}")"#, self.section);
         str.push(NL as char);
-        str.push_str(&format!("{} {}(", return_type, name));
+        str.push_str(&format!("u32 {}(", self.name));
         for (i, arg) in args.iter().enumerate() {
             str.push_str(&format!("{}", arg));
             if i != args.len() - 1 {
@@ -344,6 +341,9 @@ impl BpfCodeBuilder<Base> {
         hdr_buf.extend("#pragma once".as_bytes());
         hdr_buf.push(NL);
         hdr_buf.extend(format!("// *** HEADER FOR QUERY {} *** //", self.name).into_bytes());
+        // Always include common.bpf.h in includes header
+        hdr_buf.push(NL);
+        hdr_buf.extend(r#"#include "common.bpf.h" /* common definitions */"#.as_bytes());
         hdr_buf.push(NL);
         hdr_buf.push(NL);
 
@@ -465,7 +465,8 @@ impl BpfCodeBuilder<Base> {
 impl BpfCodeBuilder<StructConstruction> {
     pub fn write_field(&mut self, f: &Expr) -> &mut Self {
         self.structs_buf.extend(&self.prefix);
-        self.structs_buf.extend(f.to_string().as_bytes());
+        let str = format!("{};", f);
+        self.structs_buf.extend(str.as_bytes());
         self.structs_buf.push(NL);
 
         self
@@ -509,9 +510,18 @@ impl BpfCodeBuilder<MapConstruction> {
 
 impl BpfCodeBuilder<BodyConstruction> {
     /// Declares a field, and writes the result into the struct.
-    pub fn write_field(&mut self, f: &Field, st: &str, ptr: bool) -> &mut Self {
-        let str = format!("{}{}{}", st, if ptr { "->" } else { "." }, f._name);
+    pub fn write_field(&mut self, f: &Field, st: Option<(&str, bool)>) -> &mut Self {
+        let str = match st {
+            Some((st, ptr)) => format!("{}{}{}", st, if ptr { "->" } else { "." }, f._name),
+            None => {
+                // First declare it, then get its identifier
+                self.write_var_declaration(f);
+                f._name.clone()
+            }
+        };
         // If str doesn't have an event, use a generic kernel system call
+        // TODO: find way to encode whether or not field has an event, rather than
+        // relying on no name conflicts
         let sv = SystemVar::from_str(&f._name);
         match sv {
             Ok(sv) => {
@@ -583,8 +593,9 @@ impl BpfCodeBuilder<BodyConstruction> {
         let str = format!("if ({}) {{", cond);
         self.code_buf.extend(&self.prefix);
         self.code_buf.extend(str.as_bytes());
+        self.code_buf.push(NL);
 
-        self.prefix.push(NL);
+        self.prefix.push(TAB);
         self
     }
 
@@ -594,7 +605,17 @@ impl BpfCodeBuilder<BodyConstruction> {
         self.code_buf.extend(&self.prefix);
         self.code_buf.extend(str.as_bytes());
 
-        self.prefix.push(NL);
+        self.prefix.push(TAB);
+        self
+    }
+
+    pub fn write_else(&mut self) -> &mut Self {
+        self.prefix.pop();
+        let str = format!("}} else {{");
+        self.code_buf.extend(&self.prefix);
+        self.code_buf.extend(str.as_bytes());
+
+        self.prefix.push(TAB);
         self
     }
 

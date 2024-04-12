@@ -4,6 +4,7 @@
 #![feature(effects)]
 
 pub mod bpf;
+pub mod exec;
 pub mod query;
 pub mod schema;
 

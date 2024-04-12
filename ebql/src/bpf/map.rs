@@ -9,7 +9,7 @@ use super::{Struct, Type};
 pub struct RingBuf {
     pub name: String,
     pub s_repr: Struct,
-    pub max_entries: usize,
+    pub max_entries: u64,
     // TODO: add pinning, flags
 }
 

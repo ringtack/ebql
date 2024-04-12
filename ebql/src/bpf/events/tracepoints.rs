@@ -4,9 +4,11 @@ use std::{collections::HashMap, fmt::Display, str::FromStr};
 
 use anyhow::{anyhow, bail, Result};
 use lazy_static::lazy_static;
+use strum::IntoEnumIterator;
 
 use super::{
     super::{Field, Type},
+    system::SystemVar,
     Event, ProgramType,
 };
 
@@ -15,7 +17,7 @@ impl TracepointEvent {
     fn tp_name(&self) -> String {
         match self {
             TracepointEvent::MmFilemapAddToPageCache => "mm_filemap_add_to_page_cache",
-            TracepointEvent::MmFilemapDeleteFromPageCache => "mm_filemap_delete_frompage_cache",
+            TracepointEvent::MmFilemapDeleteFromPageCache => "mm_filemap_delete_from_page_cache",
             TracepointEvent::SysEnterPread64 => "sys_enter_pread64",
             TracepointEvent::SysExitPread64 => "sys_exit_pread64",
         }
@@ -51,6 +53,37 @@ impl Event for TracepointEvent {
         }
     }
 
+    fn get_all_args(&self) -> Result<Vec<Field>> {
+        let tp_args = TP_ARGS.get(self);
+        if tp_args.is_none() {
+            return Err(anyhow!(format!(
+                "Tracepoint {self} does not exist in TP_ARGS hashmap"
+            )));
+        }
+        let mut all_args = tp_args.unwrap().values().cloned().collect::<Vec<_>>();
+        // Add all system variables
+        all_args.extend(SystemVar::iter().map(|sv| sv.to_field()));
+        Ok(all_args)
+    }
+
+    fn get_arg(&self, arg: &str) -> Result<Field> {
+        let tp_args = TP_ARGS.get(self);
+        match tp_args {
+            Some(tp_args) => {
+                let f = tp_args.get(arg);
+                match f {
+                    Some(f) => Ok(f.clone()),
+                    None => SystemVar::get_field(arg),
+                }
+            }
+            None => {
+                Err(anyhow!(format!(
+                    "Tracepoint {self} should exist in TP_ARGS hashmap",
+                )))
+            }
+        }
+    }
+
     fn get_args(&self, args: &[&str]) -> Result<Vec<Field>> {
         let tp_args = TP_ARGS.get(self);
         match tp_args {
@@ -61,10 +94,10 @@ impl Event for TracepointEvent {
                     match f {
                         Some(f) => res.push(f.clone()),
                         None => {
-                            return Err(anyhow!(format!(
-                                "Arg {} not found in tracepoint {}",
-                                *arg, self
-                            )));
+                            match SystemVar::get_field(arg) {
+                                Ok(f) => res.push(f.clone()),
+                                Err(e) => return Err(e),
+                            }
                         }
                     }
                 }
@@ -81,6 +114,8 @@ impl Event for TracepointEvent {
     fn ctx(&self) -> String {
         if self.tp_dir().contains("syscall") {
             "struct trace_event_raw_sys_enter".into()
+        } else if self.tp_name().contains("filemap") {
+            "struct trace_event_raw_mm_filemap_op_page_cache".into()
         } else {
             format!("struct trace_event_raw_{}", self.tp_name())
         }
@@ -111,7 +146,7 @@ impl FromStr for TracepointEvent {
         use TracepointEvent::*;
         Ok(match s {
             "filemap/mm_filemap_add_to_page_cache" => MmFilemapAddToPageCache,
-            "filemap/mm_filemap_delete_frompage_cache" => MmFilemapDeleteFromPageCache,
+            "filemap/mm_filemap_delete_from_page_cache" => MmFilemapDeleteFromPageCache,
             "syscalls/sys_enter_pread64" => SysEnterPread64,
             "syscalls/sys_exit_pread64" => SysExitPread64,
             _ => bail!("Tracepoint event {s} not found"),

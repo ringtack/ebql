@@ -9,10 +9,16 @@ edition = "2021"
 anyhow = "1.0.80"
 clap = { version = "4.5.1", features = ["derive"] }
 crossbeam = "0.8.4"
+daggy = "0.8.0"
+handlebars = "5.1.2"
 lazy_static = "1.4.0"
 libbpf-cargo = "0.22.1"
 libbpf-rs = "0.22.1"
 libc = "*"
 log = "0.4.21"
+nom-sql = { git = "https://github.com/ringtack/nom-sql.git", branch = "master" }
+rand = "0.8.5"
 serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.115"
+strum = { version = "0.26.2", features = ["derive"] }
 which = "6.0.1"

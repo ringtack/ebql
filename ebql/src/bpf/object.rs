@@ -38,24 +38,28 @@ impl Object {
         let dir = objs[0].obj_path.parent().unwrap();
         let mut dst_path = PathBuf::from(dir);
         dst_path.push(format!("{}.bpf.o", name.as_ref()));
-        // Link together into one bpf object
-        let bpftool = get_bpftool_path()?;
-        // Create command arguments
-        let args = vec!["gen", "object"]
-            .into_iter()
-            // Add final target
-            .chain(std::iter::once(dst_path.to_str().unwrap()))
-            .chain(
-                // Convert objects into their file names
-                objs.iter().map(|br| br.obj_path.to_str().unwrap()),
-            )
-            .collect::<Vec<_>>();
-        // Link into one file
-        let mut cmd = Command::new(bpftool);
-        let out = cmd.args(args).output().context("failed to call bpftool")?;
-        if !out.status.success() {
-            let err = String::from_utf8_lossy(&out.stderr).to_string();
-            bail!("Linking objects failed: {err}");
+
+        // Run bpftool if >1 build results
+        if objs.len() > 1 {
+            // Link together into one bpf object
+            let bpftool = get_bpftool_path()?;
+            // Create command arguments
+            let args = vec!["gen", "object"]
+                .into_iter()
+                // Add final target
+                .chain(std::iter::once(dst_path.to_str().unwrap()))
+                .chain(
+                    // Convert objects into their file names
+                    objs.iter().map(|br| br.obj_path.to_str().unwrap()),
+                )
+                .collect::<Vec<_>>();
+            // Link into one file
+            let mut cmd = Command::new(bpftool);
+            let out = cmd.args(args).output().context("failed to call bpftool")?;
+            if !out.status.success() {
+                let err = String::from_utf8_lossy(&out.stderr).to_string();
+                bail!("Linking objects failed: {err}");
+            }
         }
 
         // Now, we have one object, so open as BPF object
@@ -107,8 +111,17 @@ impl Object {
         })
     }
 
+    /// Attaches all programs to the kernel.
+    pub fn attach_progs(&mut self) -> Result<()> {
+        let progs = self.progs.keys().cloned().into_iter().collect::<Vec<_>>();
+        for prog in progs {
+            self.attach_prog(prog)?;
+        }
+        Ok(())
+    }
+
     /// Attaches program with specified name to the kernel.
-    pub fn attach_prog<S: AsRef<str>>(&mut self, name: String) -> Result<()> {
+    pub fn attach_prog(&mut self, name: String) -> Result<()> {
         let prog = self.obj.prog_mut(&name).unwrap();
 
         // TODO: add extra metadata somewhere along the line for

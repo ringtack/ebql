@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt::Display, sync::Arc};
 
 use super::schema::Schema;
 use crate::record::Record;
@@ -24,6 +24,21 @@ impl RecordBatch {
     /// Return size of this record batch in bytes.
     pub fn size(&self) -> usize {
         self.records.iter().map(|r| r.size()).sum()
+    }
+}
+
+impl Display for RecordBatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "RecordBatch(\n\tSchema: {}\n\tRecords: {}\n)",
+            self.schema,
+            self.records
+                .iter()
+                .map(|r| r.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+        )
     }
 }
 

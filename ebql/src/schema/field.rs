@@ -1,8 +1,9 @@
 //! Field (a single "column" in the schema) representation.
 
-use std::{ops::Deref, sync::Arc};
+use std::{fmt, ops::Deref, sync::Arc};
 
 use anyhow::{bail, Result};
+use nom_sql::Column;
 
 use crate::{
     data_types::DataType,
@@ -33,13 +34,20 @@ impl Fields {
     }
 
     /// Converts a collection of fields into a list of BPF fields at an event.
-    pub fn to_bpf_fields(&self, e: &Box<dyn Event>) -> Result<Vec<types::Field>> {
+    pub fn to_bpf_fields(&self, e: &Arc<dyn Event>) -> Vec<types::Field> {
         self.0
             .iter()
             .map(|f| {
                 match get_event_field(e, &f.name) {
-                    Some(f) => Ok(f),
-                    None => bail!("Did not find field {} in event {}", f.name, e.name()),
+                    Some(f) => f,
+                    None => {
+                        types::Field {
+                            _name: f.name.clone(),
+                            _type: f.data_type.clone().into(),
+                            _arr: None,
+                            _off: None,
+                        }
+                    }
                 }
             })
             .collect()
@@ -111,8 +119,22 @@ impl std::fmt::Debug for Fields {
     }
 }
 
+impl fmt::Display for Fields {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Fields({})",
+            self.0
+                .iter()
+                .map(|f| f.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
 /// Describes a single "column" in a schema.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Field {
     pub name: String,
     pub data_type: DataType,
@@ -164,6 +186,6 @@ impl From<&types::Field> for Field {
 
 impl std::fmt::Display for Field {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{self:?}")
+        write!(f, "{} ({})", self.name, self.data_type)
     }
 }

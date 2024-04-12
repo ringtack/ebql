@@ -1,17 +1,19 @@
 //
 
-use std::{ops::Deref, sync::Arc, time::Duration};
+use std::{fmt::Display, ops::Deref, sync::Arc, time::Duration};
+
+use nom_sql::Literal;
 
 use crate::data_types::{DataType, TimeUnit};
 
 /// Record representation.
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct Record(Arc<[DataValue]>);
+pub struct Record(Vec<DataValue>);
 
 impl Record {
     /// Returns a new empty [`Record`]
     pub fn empty() -> Self {
-        Self(Arc::new([]))
+        Self(vec![])
     }
 
     /// Gets the length of this record (i.e. # columns)
@@ -31,27 +33,15 @@ impl Default for Record {
     }
 }
 
-impl FromIterator<DataValue> for Record {
-    fn from_iter<T: IntoIterator<Item = DataValue>>(iter: T) -> Self {
-        iter.into_iter().collect()
-    }
-}
-
 impl From<Vec<DataValue>> for Record {
     fn from(value: Vec<DataValue>) -> Self {
-        value.into_iter().collect()
+        Record(value)
     }
 }
 
 impl From<&[DataValue]> for Record {
     fn from(value: &[DataValue]) -> Self {
         Self(value.into())
-    }
-}
-
-impl<const N: usize> From<[DataValue; N]> for Record {
-    fn from(value: [DataValue; N]) -> Self {
-        Self(Arc::new(value))
     }
 }
 
@@ -74,11 +64,25 @@ impl<'a> IntoIterator for &'a Record {
 
 impl std::fmt::Debug for Record {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.as_ref().fmt(f)
+        self.0.fmt(f)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+impl Display for Record {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Record({})",
+            self.0
+                .iter()
+                .map(|dv| dv.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialOrd, Ord, Hash)]
 pub enum DataValue {
     Boolean(bool),
     UInt8(u8),
@@ -137,8 +141,52 @@ impl DataValue {
     }
 }
 
+impl From<Literal> for DataValue {
+    fn from(l: Literal) -> Self {
+        match l {
+            Literal::Integer(i) => DataValue::Int64(i),
+            Literal::UnsignedInteger(u) => DataValue::UInt64(u),
+            Literal::String(s) => DataValue::String(s.clone(), s.len()),
+            _ => unimplemented!("literal {} not supported", l.to_string()),
+        }
+    }
+}
+
+impl PartialEq for DataValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Boolean(l0), Self::Boolean(r0)) => l0 == r0,
+            (Self::UInt8(l0), Self::UInt8(r0)) => l0 == r0,
+            (Self::UInt16(l0), Self::UInt16(r0)) => l0 == r0,
+            (Self::UInt32(l0), Self::UInt32(r0)) => l0 == r0,
+            (Self::UInt64(l0), Self::UInt64(r0)) => l0 == r0,
+            (Self::Int8(l0), Self::Int8(r0)) => l0 == r0,
+            (Self::Int16(l0), Self::Int16(r0)) => l0 == r0,
+            (Self::Int32(l0), Self::Int32(r0)) => l0 == r0,
+            (Self::Int64(l0), Self::Int64(r0)) => l0 == r0,
+            (Self::String(l0, _), Self::String(r0, _)) => l0 == r0,
+            (Self::Timestamp(l0), Self::Timestamp(r0)) => l0 == r0,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for DataValue {}
+
 impl std::fmt::Display for DataValue {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            DataValue::Boolean(b) => write!(f, "{b}"),
+            DataValue::UInt8(u) => write!(f, "{u}"),
+            DataValue::UInt16(u) => write!(f, "{u}"),
+            DataValue::UInt32(u) => write!(f, "{u}"),
+            DataValue::UInt64(u) => write!(f, "{u}"),
+            DataValue::Int8(i) => write!(f, "{i}"),
+            DataValue::Int16(i) => write!(f, "{i}"),
+            DataValue::Int32(i) => write!(f, "{i}"),
+            DataValue::Int64(i) => write!(f, "{i}"),
+            DataValue::String(s, _) => write!(f, "{s}"),
+            DataValue::Timestamp(d) => write!(f, "{:?}", d),
+        }
     }
 }

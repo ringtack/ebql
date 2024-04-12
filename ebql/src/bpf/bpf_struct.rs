@@ -95,7 +95,10 @@ impl Struct {
             off += fsz;
         }
         // Make sure to add for the remaining padding necessary
-        off + (max - off % max)
+        if off % max != 0 {
+            off += max - off % max;
+        }
+        off
     }
 
     /// Attempts to convert a byte slice into the output Record, specified by
@@ -107,9 +110,16 @@ impl Struct {
             // Get its offset within the buf
             let start = self.offs[i];
             let end = start + f.size();
+
+            // log::info!("Reading buf[{}..{}] for type {}", start, end, f._type);
+
             let f_buf = &buf[start..end];
             // Based on the field's data type, transmute it to the appropriate type
             let dv = match f._type {
+                Type::Bool => {
+                    let val = f_buf[0] != 0;
+                    DataValue::Boolean(val)
+                }
                 Type::U8 | Type::UChar => DataValue::UInt8(f_buf[0]),
                 Type::U16 => {
                     let val =
@@ -147,12 +157,13 @@ impl Struct {
                     DataValue::String(s.to_string(), len)
                 }
                 Type::Pointer(_) => unimplemented!("dunno how to handle this"),
+                Type::Struct(_, _) => unimplemented!("dunno how to handle this"),
             };
 
             // Assign mapping from optimized representation order to schema order
             dvs[self.mapping[i]] = dv;
         }
 
-        Ok(dvs.into())
+        Ok(Record::from(dvs))
     }
 }

@@ -1,12 +1,16 @@
 //! Data type definitions.
 
-use std::fmt;
+use std::{default, fmt};
 
-use crate::{field::Fields, types::Type};
+use crate::{
+    field::{FieldRef, Fields},
+    types::Type,
+};
 
 /// Supported data types in the query schema.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum DataType {
+    #[default]
     Boolean,
     UInt8,
     UInt16,
@@ -20,7 +24,7 @@ pub enum DataType {
     Float64,
     String(usize),
     Timestamp(TimeUnit),
-    Struct(Fields),
+    Struct(String, Fields),
 }
 
 impl DataType {
@@ -67,8 +71,9 @@ impl DataType {
     /// and metadata.
     pub fn equals_datatype(&self, other: &DataType) -> bool {
         match (&self, other) {
-            (DataType::Struct(a), DataType::Struct(b)) => {
-                a.len() == b.len()
+            (DataType::Struct(s1, a), DataType::Struct(s2, b)) => {
+                s1 == s2
+                    && a.len() == b.len()
                     && a.iter()
                         .zip(b)
                         .all(|(a, b)| a.data_type().equals_datatype(b.data_type()))
@@ -93,7 +98,38 @@ impl DataType {
             DataType::Float64 => 8,
             DataType::String(len) => *len,
             DataType::Timestamp(_) => 8,
-            DataType::Struct(fields) => fields.size(),
+            DataType::Struct(_, fields) => fields.size(),
+        }
+    }
+}
+
+impl Into<Type> for DataType {
+    fn into(self) -> Type {
+        match self {
+            DataType::Boolean => Type::Bool,
+            DataType::UInt8 => Type::U8,
+            DataType::UInt16 => Type::U16,
+            DataType::UInt32 => Type::U32,
+            DataType::UInt64 => Type::U64,
+            DataType::Int8 => Type::S8,
+            DataType::Int16 => Type::S16,
+            DataType::Int32 => Type::S32,
+            DataType::Int64 => Type::S64,
+            DataType::Float32 => unimplemented!("see if bpf supports floats"),
+            DataType::Float64 => unimplemented!("see if bpf supports floats"),
+            DataType::String(l) => Type::String(l),
+            DataType::Timestamp(_) => Type::U64,
+            DataType::Struct(name, fields) => {
+                Type::Struct(
+                    name,
+                    Some(
+                        fields
+                            .iter()
+                            .map(|f| f.data_type.clone().into())
+                            .collect::<Vec<Type>>(),
+                    ),
+                )
+            }
         }
     }
 }
@@ -102,6 +138,7 @@ impl From<Type> for DataType {
     fn from(t: Type) -> Self {
         use DataType::*;
         match t {
+            Type::Bool => Boolean,
             Type::U8 => UInt8,
             Type::U16 => UInt16,
             Type::U32 => UInt32,
@@ -114,6 +151,7 @@ impl From<Type> for DataType {
             Type::SChar => Int8,
             Type::String(l) => String(l),
             Type::Pointer(_) => unimplemented!("TODO: figure out what to do with pointers"),
+            Type::Struct(_, _) => unimplemented!("TODO: figure out what to do with structs"),
         }
     }
 }
@@ -122,6 +160,7 @@ impl From<&Type> for DataType {
     fn from(t: &Type) -> Self {
         use DataType::*;
         match t {
+            Type::Bool => Boolean,
             Type::U8 => UInt8,
             Type::U16 => UInt16,
             Type::U32 => UInt32,
@@ -134,6 +173,7 @@ impl From<&Type> for DataType {
             Type::SChar => Int8,
             Type::String(l) => String(*l),
             Type::Pointer(_) => unimplemented!("TODO: figure out what to do with pointers"),
+            Type::Struct(_, _) => unimplemented!("TODO: figure out what to do with structs"),
         }
     }
 }

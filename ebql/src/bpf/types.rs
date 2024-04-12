@@ -54,6 +54,7 @@ impl Display for Field {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use self::Type::*;
         match &self._type {
+            Bool => write!(f, "bool {}", self._name),
             U8 => write!(f, "u8 {}", self._name),
             U16 => write!(f, "u16 {}", self._name),
             U32 => write!(f, "u32 {}", self._name),
@@ -65,7 +66,8 @@ impl Display for Field {
             UChar => write!(f, "u8 {}", self._name),
             SChar => write!(f, "s8 {}", self._name),
             String(len) => write!(f, "char {}[{}]", self._name, *len),
-            Pointer(t) => write!(f, "{} {}*", *t, self._name),
+            Pointer(t) => write!(f, "{}* {}", *t, self._name),
+            Struct(name, _) => write!(f, "{} {}", name, self._name),
         }
     }
 }
@@ -99,8 +101,10 @@ impl Ord for Field {
 /// Possible data types in BPF (C).
 /// Why U/S? vmlinux.h seems to typedef `unsigned <int type>` -> `u#`, and `<int
 /// type>` -> `s#`.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub enum Type {
+    #[default]
+    Bool,
     U8,
     U16,
     U32,
@@ -116,7 +120,8 @@ pub enum Type {
     // NOTE: currently, I think this only realy makes sense for one layer of indirection. See if
     // more are necessary.
     Pointer(Box<Type>),
-    // TODO: how to encode structs within structs?
+    // TODO: figure out better way to define struct definitions to ensure type safety
+    Struct(String, Option<Vec<Type>>),
 }
 
 impl Type {
@@ -124,6 +129,7 @@ impl Type {
     pub fn size(&self) -> usize {
         use self::Type::*;
         match self {
+            Bool => 1,
             U8 => 1,
             U16 => 2,
             U32 => 4,
@@ -136,6 +142,13 @@ impl Type {
             SChar => 1,
             String(len) => *len,
             Pointer(_) => 8,
+            // allow partial definitions to have name
+            Struct(_, ot) => {
+                match ot {
+                    Some(t) => t.iter().map(|t| t.size()).sum(),
+                    None => 0,
+                }
+            }
         }
     }
 }
@@ -144,6 +157,7 @@ impl Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use self::Type::*;
         match self {
+            Bool => write!(f, "bool"),
             U8 => write!(f, "u8"),
             U16 => write!(f, "u16"),
             U32 => write!(f, "u32"),
@@ -157,6 +171,7 @@ impl Display for Type {
             // TODO: see if I can incorporate this as char <name>[LEN]?
             String(_len) => write!(f, "char *"),
             Pointer(t) => write!(f, "{} *", *t),
+            Struct(name, _) => write!(f, "{name}"),
         }
     }
 }
