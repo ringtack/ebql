@@ -1,8 +1,8 @@
 #pragma once
 
 /**
- * Template for sort implementations, using the TinyTemplate template enginer. Used by
- * BpfProgramBuilder to create specialized implementations for queries.
+ * Template for sort implementations, using the TinyTemplate template enginer.
+ * Used by BpfProgramBuilder to create specialized implementations for queries.
  */
 
 #include "common.bpf.h"
@@ -24,15 +24,16 @@ static void __always_inline isort({is_q_type} * arr, u32 arr_sz) {
   }
 }
 
-// We must manually limit the number of iterations possible to make the verifier confident that the
-// search terminates. Here, 2^19 can bisect 524,288 entries, which should cover the maximum possible
-// array size (which we should limit regardless, since BPF programs can run a max of 1M
-// instructions; see MAX_ARR_SIZE).
+// We must manually limit the number of iterations possible to make the verifier
+// confident that the search terminates. Here, 2^19 can bisect 524,288 entries,
+// which should cover the maximum possible array size (which we should limit
+// regardless, since BPF programs can run a max of 1M instructions; see
+// MAX_ARR_SIZE).
 #define MAX_BINARY_SEARCH_DEPTH 19
 
-// Since BPF programs can run a max of 1 million instructions, we limit the maximum possible array
-// size to 2^18 (i.e. 262144) entries. For larger arrays (i.e. windows), windowing must be
-// implemented in user-space.
+// Since BPF programs can run a max of 1 million instructions, we limit the
+// maximum possible array size to 2^18 (i.e. 262144) entries. For larger arrays
+// (i.e. windows), windowing must be implemented in user-space.
 #define MAX_ARR_SIZE 1 << 18
 
 // Error codes
@@ -40,15 +41,18 @@ static void __always_inline isort({is_q_type} * arr, u32 arr_sz) {
 #define EXHAUSTED_ITERATIONS 101
 #define NOT_FOUND 0xBADFBADFBADF
 
-// Performs binary search on the array (with specified arr_sz, value to find, and member to
-// compare). Copies the final index to res, or NOT_FOUND.
+// Performs binary search on the array (with specified arr_sz, value to find,
+// and member to compare). Copies the final index to res, or NOT_FOUND.
 //
-// Credit to [parca-agent/parca-dev](https://github.com/parca-dev/parca-agent/tree/main) for the
-// implementation.
-static void __always_inline bsearch({bs_q_type} * arr, u32 arr_sz, {bs_cmp_type} value) {
+// Credit to
+// [parca-agent/parca-dev](https://github.com/parca-dev/parca-agent/tree/main)
+// for the implementation.
+static void __always_inline bsearch({bs_q_type} * arr, u32 arr_sz,
+                                    {bs_cmp_type} value) {
   u64 l = 0, r = arr_sz;
   for (u32 i = 0; i < MAX_BINARY_SEARCH_DEPTH; i++) {
-    /* Here, we don't worry about int overflow, since arrays can only be MAX_ARR_SIZE large*/
+    /* Here, we don't worry about int overflow, since arrays can only be
+     * MAX_ARR_SIZE large*/
     u32 mid = (l + r) / 2;
     if (l >= r) {
       res = NOT_FOUND;

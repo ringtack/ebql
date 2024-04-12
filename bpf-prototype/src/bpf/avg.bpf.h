@@ -7,23 +7,30 @@
 #include "common.bpf.h"
 #include "simple_1.bpf.h"
 
-// In the worst case, every element is distinct, so need at most WINDOW_SIZE entries.
+// In the worst case, every element is distinct, so need at most WINDOW_SIZE
+// entries.
 #define AVG_MAX_ENTRIES (WINDOW_SIZE)
 // Since BPF doesn't allow FP, scale values by AVG_SCALE (4 -> +4 sigfigs)
 #define AVG_SCALE (1 << 8)
 
 // Avg counter for individual item.
 typedef struct {
-  // Note: the averaged value doesn't have to be u64, but do this to prevent overflows.
+  // Note: the averaged value doesn't have to be u64, but do this to prevent
+  // overflows.
   u64 avg;
   u64 count;
 } avg_t;
 
 avg_t init_avg = {0};
 
+typedef struct {
+  u64 pfn;
+  u64 pid;
+} avg_key_simple_1_t;
+
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
-  __type(key, u64);
+  __type(key, avg_key_simple_1_t);
   __type(value, avg_t);
   __uint(max_entries, AVG_MAX_ENTRIES);
   __uint(map_flags, BPF_F_NO_PREALLOC);
@@ -32,7 +39,7 @@ struct {
 // {{ if window.is_tumbling }}
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
-  __type(key, u64);
+  __type(key, avg_key_simple_1_t);
   __type(value, avg_t);
   __uint(max_entries, AVG_MAX_ENTRIES);
   __uint(map_flags, BPF_F_NO_PREALLOC);
@@ -40,9 +47,10 @@ struct {
 // {{ endif }}
 
 /**
- * Insert a value into the average count. Returns 0 on success, negative error code on failure.
+ * Insert a value into the average count. Returns 0 on success, negative error
+ * code on failure.
  */
-static __always_inline s32 avg_insert(u64 key, u64 val) {
+static __always_inline s32 avg_insert(avg_key_simple_1_t key, u64 val) {
   s32 ret;
   avg_t *avg = (avg_t *)bpf_map_lookup_elem(&avg_simple_1, &key);
   if (!avg) {
@@ -63,14 +71,16 @@ static __always_inline s32 avg_insert(u64 key, u64 val) {
 }
 
 /**
- * Delete a value from the next average count. Returns 0 on success, negative error code on failure.
+ * Delete a value from the next average count. Returns 0 on success, negative
+ * error code on failure.
  */
 static __always_inline s32 avg_delete(u64 key, u64 val) {
   s32 ret = 0;
   avg_t *avg = (avg_t *)bpf_map_lookup_elem(&avg_simple_1, &key);
   if (!avg) {
     // If doesn't already exist, nothing to delete
-    WARN("Trying to delete non-existent value from average (%llu -> %llu)", key, val);
+    WARN("Trying to delete non-existent value from average (%llu -> %llu)", key,
+         val);
   } else {
     // Otherwise, update counter
     if (avg->count == 1) {
@@ -93,7 +103,8 @@ static __always_inline s32 avg_delete(u64 key, u64 val) {
 // {{ if window.is_tumbling }}
 
 /**
- * Insert a value into the next average count. Returns 0 on success, negative error code on failure.
+ * Insert a value into the next average count. Returns 0 on success, negative
+ * error code on failure.
  */
 static __always_inline s32 avg_insert_next(u64 key, u64 val) {
   s32 ret;
@@ -116,14 +127,16 @@ static __always_inline s32 avg_insert_next(u64 key, u64 val) {
 }
 
 /**
- * Delete a value from the next average count. Returns 0 on success, negative error code on failure.
+ * Delete a value from the next average count. Returns 0 on success, negative
+ * error code on failure.
  */
 static __always_inline s32 avg_delete_next(u64 key, u64 val) {
   s32 ret = 0;
   avg_t *avg = (avg_t *)bpf_map_lookup_elem(&avg_next_simple_1, &key);
   if (!avg) {
     // If doesn't already exist, nothing to delete
-    WARN("Trying to delete non-existent value from average (%llu -> %llu)", key, val);
+    WARN("Trying to delete non-existent value from average (%llu -> %llu)", key,
+         val);
   } else {
     // Otherwise, update counter
     if (avg->count == 1) {
@@ -143,12 +156,15 @@ static __always_inline s32 avg_delete_next(u64 key, u64 val) {
   return 0;
 }
 
-static __always_inline s64 __tumble_avg_clear_callback(struct bpf_map *map, u64 *key, avg_t *avg,
+static __always_inline s64 __tumble_avg_clear_callback(struct bpf_map *map,
+                                                       u64 *key, avg_t *avg,
                                                        void *unused) {
   *avg = (avg_t){0};
   return 0;
 }
-static __always_inline s64 __tumble_avg_copy_callback(struct bpf_map *map, u64 *key, avg_t *avg,
+
+static __always_inline s64 __tumble_avg_copy_callback(struct bpf_map *map,
+                                                      u64 *key, avg_t *avg,
                                                       void *unused) {
   s64 ret = bpf_map_update_elem(&avg_simple_1, key, avg, BPF_ANY);
   if (ret != 0) {
@@ -165,7 +181,8 @@ static __always_inline void tumble_avg() {
   // First, zero out elements in avg so we don't have any leftovers
   bpf_for_each_map_elem(&avg_simple_1, __tumble_avg_clear_callback, NULL, 0);
   // Then, copy elements over from avg_next to avg
-  bpf_for_each_map_elem(&avg_next_simple_1, __tumble_avg_copy_callback, NULL, 0);
+  bpf_for_each_map_elem(&avg_next_simple_1, __tumble_avg_copy_callback, NULL,
+                        0);
 }
 
 // {{ endif }}

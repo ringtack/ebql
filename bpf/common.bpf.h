@@ -50,22 +50,22 @@ const u32 zero = 0;
 // Log utilities
 #define DEBUG(fmt, ...)                                                        \
   ({                                                                           \
-    if (LOG_LVL <= L_DEBUG)                                                    \
+    if (LOG_LVL >= L_DEBUG)                                                    \
       bpf_printk("DEBUG: " fmt, ##__VA_ARGS__);                                \
   })
 #define INFO(fmt, ...)                                                         \
   ({                                                                           \
-    if (LOG_LVL <= L_INFO)                                                     \
+    if (LOG_LVL >= L_INFO)                                                     \
       bpf_printk(BLUE "INFO: " NC fmt, ##__VA_ARGS__);                         \
   })
 #define WARN(fmt, ...)                                                         \
   ({                                                                           \
-    if (LOG_LVL <= L_WARN)                                                     \
+    if (LOG_LVL >= L_WARN)                                                     \
       bpf_printk(YELLOW "WARN: " NC fmt, ##__VA_ARGS__);                       \
   })
 #define ERROR(fmt, ...)                                                        \
   ({                                                                           \
-    if (LOG_LVL <= L_ERROR)                                                    \
+    if (LOG_LVL >= L_ERROR)                                                    \
       bpf_printk(RED "ERROR: " NC fmt, ##__VA_ARGS__);                         \
   })
 
@@ -102,8 +102,18 @@ const volatile u8 LOG_LVL = L_DEBUG;
 
 #define TIME(var) \
   do {            \
-    var = bpf_get_ktime_ns(); \
+    var = bpf_ktime_get_ns(); \
 } while (0)
+
+#define CPU(var) \
+  do {           \
+    var = bpf_get_smp_processor_id(); \
+  } while (0)
+
+#define CGROUP(var) \
+  do {           \
+    var = bpf_get_current_cgroup_id(); \
+  } while (0)
 
 // Compute the average of two ints (s32s) without overflow.
 static int average_without_overflow(s32 a, s32 b) {

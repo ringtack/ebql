@@ -1,0 +1,68 @@
+#pragma once
+
+/**
+ * Windowing capabilities that turn eBPF event streams into bounded relations.
+ * Three window types are supported:
+ * - Count(N, step): Stores a window of N elements, with a step <= N.
+ * - Time(Interval, step): Stores a window of interval time span, with step <=
+ * interval.
+ * - TODO: Session(threshold): Stores a window by sessions of activity, with an
+ * inactivity threshold.
+ *
+ * Stream processing occurs only when the step is triggered (e.g. the step
+ * duration elapsed in a time interval).
+ *
+ * RESTRICTIONS (until I can figure out more verifier stuff):
+ * - For counts, WINDOW_SIZE % STEP == 0 (i.e. WINDOW_SIZE must be divisible by
+ * STEP)
+ * - For time, STEP == INTERVAL (i.e. all time windows must be tumbling
+ * windows).
+ */
+
+#include "common.bpf.h"
+#include "{{query_name}}.bpf.h"
+
+{{#if is_count}}
+#define WINDOW_SIZE ({{count}})
+{{else}}
+#define INTERVAL ({{interval}})
+{{/if}}
+
+// Window representation: for tumbling windows over the aggregations currently supported, only need
+// count/time to know when to tumble.
+typedef struct window {
+{{#if is_count}}
+  u64 count;
+{{else}}
+  u64 start_time;
+{{/if}}
+} window_t;
+
+window_t w = {0};
+
+/**
+ * Adds to window. Returns whether flushing is needed
+ */
+{{#if is_count}}
+static __always_inline bool window_add() {
+  w.count += 1;
+  return (w.count == WINDOW_SIZE);
+}
+{{else}}
+static __always_inline bool window_add(u64 time) {
+  if (w.start_time == 0) {
+    w.start_time = time;
+    return false;
+  }
+  return (w.start_time + INTERVAL < time);
+}
+{{/if}}
+
+/**
+ * Tumbles the window.
+ */
+{{#if is_count}}
+static __always_inline void window_tumble() { w.count = 0; }
+{{else}}
+static __always_inline void window_tumble(u64 time) { w.start_time = time; }
+{{/if}}

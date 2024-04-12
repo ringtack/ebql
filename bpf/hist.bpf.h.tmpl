@@ -6,13 +6,12 @@
 
 #include "common.bpf.h"
 #include "math.bpf.h"
-#include "simple_1.bpf.h"
 
 // Total number of slots in the histogram.
-#define N_BUCKETS 4
+#define N_BUCKETS ({{n_buckets}})
 
 // Value to scale u64s for FP computation (here, 6 means 0.abcdef -> abcdef)
-#define FP_SCALE 1e6
+#define FP_SCALE ({{fp_scale}})
 // Value to scale inputted quantile values by (since quantile percents are
 // already scaled up, don't need to scale by exactly as much)
 #define QUANTILE_SCALE (FP_SCALE / 1e2)
@@ -37,58 +36,53 @@ typedef struct hist {
 } hist_t;
 
 hist_t hist = {
-    .buckets = {{0, 5, 0}, {5, 10, 0}, {10, 15, 0}, {15, 20, 0}},
-    .count = 0,
-};
-
-// Add logic for optimizing tumbling windows aggregation
-// {{ if window.is_tumbling }}
-hist_t hist_next = {
-    .buckets = {{0, 5, 0}, {5, 10, 0}, {10, 15, 0}, {15, 20, 0}},
+    .buckets = {{buckets}},
     .count = 0,
 };
 
 /**
- * Copies over next histogram buffer to current histogram, and reset next
- * histogram.
+ * Clears histogram by tumbling.
  */
 static __always_inline void tumble_hist() {
-  hist = hist_next;
-  for (u32 b = 0; b < N_BUCKETS; b++)
-    hist_next.buckets[b].count = 0;
+  for (u32 b = 0; b < N_BUCKETS; b++) hist.buckets[b].count = 0;
+  hist.count = 0;
 }
-// {{ endif }}
 
-// TODO: codegen to initialize buckets
-
-// {{ if hist.is_log }}
+{
+  {
+#if hist.is_log
+  }
+}
 
 // Computes bucket of value v in histogram h. Utilizes fast log access, assuming
 // that bucket UBs are incremented by powers of 2.
 // TODO: see if ptr needed
 static u64 __always_inline hist_bucket(hist_t *h, u64 v) {
   u64 slot = log2l(v);
-  if (slot >= N_BUCKETS)
-    slot = N_BUCKETS - 1;
+  if (slot >= N_BUCKETS) slot = N_BUCKETS - 1;
   return slot;
 }
 
-// {{ else }}
+{
+  { else }
+}
 
 // Computes bucket of value v in histogram h.
 // TODO: use binary search
-// static u64 __always_inline hist_bucket(hist_t *h, u64 v) {
-// #pragma clang loop unroll(full)
-//   for (u32 i = 0; i < N_BUCKETS; i++) {
-//     u64 lb = h->buckets[i].lb, ub = h->buckets[i].ub;
-//     if (lb <= v && v < ub) {
-//       return i;
-//     }
-//   }
-//   return N_BUCKETS - 1;
-// }
+static u64 __always_inline hist_bucket(hist_t *h, u64 v) {
+#pragma clang loop unroll(full)
+  for (u32 i = 0; i < N_BUCKETS; i++) {
+    u64 lb = h->buckets[i].lb, ub = h->buckets[i].ub;
+    if (lb <= v && v < ub) {
+      return i;
+    }
+  }
+  return N_BUCKETS - 1;
+}
 
-// {{ endif }}
+{
+  { / if }
+}
 
 // Inserts/deletes a value v into/from the histogram.
 static void __always_inline hist_insert(hist_t *h, u64 v) {
@@ -96,6 +90,7 @@ static void __always_inline hist_insert(hist_t *h, u64 v) {
   h->buckets[slot].count += 1;
   h->count += 1;
 }
+
 static void __always_inline hist_delete(hist_t *h, u64 v) {
   u64 slot = hist_bucket(h, v);
   h->buckets[slot].count -= 1;

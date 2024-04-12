@@ -68,7 +68,8 @@ typedef struct join_result_simple_1_simple_2 {
   u32 size;
 } join_result_simple_1_simple_2_t;
 
-/* FUNCTION DEFINITIONS: to prevent unknown identifiers when calling functions defined after. */
+/* FUNCTION DEFINITIONS: to prevent unknown identifiers when calling functions
+ * defined after. */
 
 static s32 insert_join_result_simple_1_simple_2(simple_1_t *l, simple_2_t *r);
 static s32 nested_loop_join_simple_1_simple_2();
@@ -84,8 +85,8 @@ void join_clear_buckets_simple_2();
 
 /* JOIN SYNOPSES */
 
-// Use window size as max entries; with BPF_F_NO_PREALLOC, any un-used values *should* not be
-// using memory anyways.
+// Use window size as max entries; with BPF_F_NO_PREALLOC, any un-used values
+// *should* not be using memory anyways.
 #define MAX_ENTRIES_JOIN_SIMPLE_1 WINDOW_SIZE
 #define MAX_ENTRIES_JOIN_SIMPLE_2 WINDOW_SIZE
 
@@ -107,8 +108,8 @@ struct {
   __uint(map_flags, BPF_F_NO_PREALLOC);
 } join_buckets_simple_2 SEC(".maps");
 
-// Queue to represent pending work; necessary if nested loops of BUF_SIZE_1 X BUF_SIZE_2 can exceed
-// maximum insn count
+// Queue to represent pending work; necessary if nested loops of BUF_SIZE_1 X
+// BUF_SIZE_2 can exceed maximum insn count
 struct {
   __uint(type, BPF_MAP_TYPE_QUEUE);
   // TODO: see if we can estimate lower number
@@ -122,48 +123,56 @@ join_result_simple_1_simple_2_t join_result_simple_1_simple_2 = {0};
 
 // Insert the result of a join into the result buffer.
 static s32 insert_join_result_simple_1_simple_2(simple_1_t *l, simple_2_t *r) {
-  if (join_result_simple_1_simple_2.size >= RESULT_SIZE_JOIN_SIMPLE_1_SIMPLE_2) {
+  if (join_result_simple_1_simple_2.size >=
+      RESULT_SIZE_JOIN_SIMPLE_1_SIMPLE_2) {
     WARN("join result full; dropping join result...");
     return ARRAY_FULL;
   }
   // Appease verifier
-  if (join_result_simple_1_simple_2.head >= RESULT_SIZE_JOIN_SIMPLE_1_SIMPLE_2) {
+  if (join_result_simple_1_simple_2.head >=
+      RESULT_SIZE_JOIN_SIMPLE_1_SIMPLE_2) {
     ERROR("BUG: join result head > join result size");
     return BUG_ERROR_CODE;
   }
   // Create result query
-  join_result_simple_1_simple_2.buf[join_result_simple_1_simple_2.head] = (simple_1_simple_2_t){
-      .pid = l->pid,
-      .time_simple_1 = l->time,
-      .pfn_simple_1 = l->pfn,
-      .i_ino_simple_1 = l->i_ino,
-      .count_simple_1 = l->count,
-      .s_dev_simple_1 = l->s_dev,
-      .tgid_simple_1 = l->tgid,
-      .ns_pid_simple_1 = l->ns_pid,
-      .time_simple_2 = r->time,
-      .fd_simple_2 = r->fd,
-      .count_simple_2 = r->count,
-      .tgid_simple_2 = r->tgid,
-  };
+  join_result_simple_1_simple_2.buf[join_result_simple_1_simple_2.head] =
+      (simple_1_simple_2_t){
+          .pid = l->pid,
+          .time_simple_1 = l->time,
+          .pfn_simple_1 = l->pfn,
+          .i_ino_simple_1 = l->i_ino,
+          .count_simple_1 = l->count,
+          .s_dev_simple_1 = l->s_dev,
+          .tgid_simple_1 = l->tgid,
+          .ns_pid_simple_1 = l->ns_pid,
+          .time_simple_2 = r->time,
+          .fd_simple_2 = r->fd,
+          .count_simple_2 = r->count,
+          .tgid_simple_2 = r->tgid,
+      };
   bpf_probe_read_kernel_str(
-      join_result_simple_1_simple_2.buf[join_result_simple_1_simple_2.head].comm_simple_1,
+      join_result_simple_1_simple_2.buf[join_result_simple_1_simple_2.head]
+          .comm_simple_1,
       TASK_COMM_LEN, l->comm);
   bpf_probe_read_kernel_str(
-      join_result_simple_1_simple_2.buf[join_result_simple_1_simple_2.head].comm_simple_2,
+      join_result_simple_1_simple_2.buf[join_result_simple_1_simple_2.head]
+          .comm_simple_2,
       TASK_COMM_LEN, r->comm);
 
   // Update pointers
   join_result_simple_1_simple_2.head =
-      (join_result_simple_1_simple_2.head + 1) % RESULT_SIZE_JOIN_SIMPLE_1_SIMPLE_2;
+      (join_result_simple_1_simple_2.head + 1) %
+      RESULT_SIZE_JOIN_SIMPLE_1_SIMPLE_2;
   join_result_simple_1_simple_2.size += 1;
 
   return 0;
 }
 
 // Callback to process each simple_1 bucket
-static s64 __nested_loop_join_simple_1_simple_2_callback(struct bpf_map *m, s32 *pid,
-                                                         bucket_simple_1_t *b, void *unused) {
+static s64 __nested_loop_join_simple_1_simple_2_callback(struct bpf_map *m,
+                                                         s32 *pid,
+                                                         bucket_simple_1_t *b,
+                                                         void *unused) {
   // For each bucket, join with simple_2 buckets
   return join_bucket_simple_2(b);
 }
@@ -171,7 +180,8 @@ static s64 __nested_loop_join_simple_1_simple_2_callback(struct bpf_map *m, s32 
 // Perform nested loop join. Return 0 on success, an error code on failure.
 static s32 nested_loop_join_simple_1_simple_2() {
   return bpf_for_each_map_elem(&join_buckets_simple_1,
-                               __nested_loop_join_simple_1_simple_2_callback, NULL, 0);
+                               __nested_loop_join_simple_1_simple_2_callback,
+                               NULL, 0);
 }
 
 // Callback for bpf_loop iterations.
@@ -222,7 +232,8 @@ static s64 __join_elt_simple_2_callback(u32 i, join_elt_simple_2_ctx_t *ctx) {
 
 // Joins a single element from simple_1 to simple_2.
 static s32 join_elt_simple_2(simple_1_t *e) {
-  bucket_simple_2_t *b = (bucket_simple_2_t *)bpf_map_lookup_elem(&join_buckets_simple_2, &e->pid);
+  bucket_simple_2_t *b =
+      (bucket_simple_2_t *)bpf_map_lookup_elem(&join_buckets_simple_2, &e->pid);
   if (!b) {
     return 0;
   }
@@ -235,14 +246,18 @@ static s32 join_elt_simple_2(simple_1_t *e) {
   // TODO: add individual processing logic (e.g. filters, maps) here?
 }
 
-// Inserts q to simple_1's join bucket. Returns 0 on success, an error code on failure.
+// Inserts q to simple_1's join bucket. Returns 0 on success, an error code on
+// failure.
 s32 insert_bucket_simple_1(simple_1_t q) {
   // Find join bucket of q
   // TODO: template the pid member access
-  bucket_simple_1_t *b = (bucket_simple_1_t *)bpf_map_lookup_elem(&join_buckets_simple_1, &q.pid);
+  bucket_simple_1_t *b =
+      (bucket_simple_1_t *)bpf_map_lookup_elem(&join_buckets_simple_1, &q.pid);
   if (!b) {
-    bpf_map_update_elem(&join_buckets_simple_1, &q.pid, &init_bucket_simple_1, BPF_NOEXIST);
-    b = (bucket_simple_1_t *)bpf_map_lookup_elem(&join_buckets_simple_1, &q.pid);
+    bpf_map_update_elem(&join_buckets_simple_1, &q.pid, &init_bucket_simple_1,
+                        BPF_NOEXIST);
+    b = (bucket_simple_1_t *)bpf_map_lookup_elem(&join_buckets_simple_1,
+                                                 &q.pid);
     if (!b) {
       ERROR("failed to insert into join_buckets_simple_1");
       return BUG_ERROR_CODE;
@@ -268,11 +283,13 @@ s32 insert_bucket_simple_1(simple_1_t q) {
   return 0;
 }
 
-// Delete q from simple_1's join bucket. Returns 0 on success, an error code on failure.
+// Delete q from simple_1's join bucket. Returns 0 on success, an error code on
+// failure.
 s32 join_delete_bucket_simple_1(simple_1_t q) {
   // Find join bucket of q
   // TODO: template the pid member access
-  bucket_simple_1_t *b = (bucket_simple_1_t *)bpf_map_lookup_elem(&join_buckets_simple_1, &q.pid);
+  bucket_simple_1_t *b =
+      (bucket_simple_1_t *)bpf_map_lookup_elem(&join_buckets_simple_1, &q.pid);
   if (!b) {
     ERROR("BUG: trying to delete non-existent bucket for simple_1");
     return BUG_ERROR_CODE;
@@ -287,8 +304,8 @@ s32 join_delete_bucket_simple_1(simple_1_t q) {
     return BUG_ERROR_CODE;
   }
   b->size -= 1;
-  // If size -> 0, clear bucket from hash table to save memory, as if the size becomes 0 it's likely
-  // that this value is quite rare
+  // If size -> 0, clear bucket from hash table to save memory, as if the size
+  // becomes 0 it's likely that this value is quite rare
   // TODO: see if this actually saves memory
   // if (b->size == 0) {
   //   bpf_map_delete_elem(&join_buckets_simple_1, &q.pid);
@@ -297,8 +314,8 @@ s32 join_delete_bucket_simple_1(simple_1_t q) {
   return 0;
 }
 
-static u64 __clear_bucket_simple_1(struct bpf_map *m, s32 *pid, bucket_simple_1_t *b,
-                                   void *unused) {
+static u64 __clear_bucket_simple_1(struct bpf_map *m, s32 *pid,
+                                   bucket_simple_1_t *b, void *unused) {
   b->tail = b->head;
   b->size = 0;
   return 0;
@@ -306,17 +323,22 @@ static u64 __clear_bucket_simple_1(struct bpf_map *m, s32 *pid, bucket_simple_1_
 
 // If tumbling windows, clear all values instead of individually deleting
 void join_clear_buckets_simple_1() {
-  bpf_for_each_map_elem(&join_buckets_simple_1, __clear_bucket_simple_1, NULL, 0);
+  bpf_for_each_map_elem(&join_buckets_simple_1, __clear_bucket_simple_1, NULL,
+                        0);
 }
 
-// Inserts q to simple_2's join bucket. Returns 0 on success, an error code on failure.
+// Inserts q to simple_2's join bucket. Returns 0 on success, an error code on
+// failure.
 s32 join_insert_bucket_simple_2(simple_2_t q) {
   // Find join bucket of q
   // TODO: template the pid member access
-  bucket_simple_2_t *b = (bucket_simple_2_t *)bpf_map_lookup_elem(&join_buckets_simple_2, &q.pid);
+  bucket_simple_2_t *b =
+      (bucket_simple_2_t *)bpf_map_lookup_elem(&join_buckets_simple_2, &q.pid);
   if (!b) {
-    bpf_map_update_elem(&join_buckets_simple_2, &q.pid, &init_bucket_simple_2, BPF_NOEXIST);
-    b = (bucket_simple_2_t *)bpf_map_lookup_elem(&join_buckets_simple_2, &q.pid);
+    bpf_map_update_elem(&join_buckets_simple_2, &q.pid, &init_bucket_simple_2,
+                        BPF_NOEXIST);
+    b = (bucket_simple_2_t *)bpf_map_lookup_elem(&join_buckets_simple_2,
+                                                 &q.pid);
     if (!b) {
       ERROR("failed to insert into join_buckets_simple_2");
       return BUG_ERROR_CODE;
@@ -342,11 +364,13 @@ s32 join_insert_bucket_simple_2(simple_2_t q) {
   return 0;
 }
 
-// Delete q from simple_2's join bucket. Returns 0 on success, an error code on failure.
+// Delete q from simple_2's join bucket. Returns 0 on success, an error code on
+// failure.
 s32 join_delete_bucket_simple_2(simple_2_t q) {
   // Find join bucket of q
   // TODO: template the pid member access
-  bucket_simple_2_t *b = (bucket_simple_2_t *)bpf_map_lookup_elem(&join_buckets_simple_2, &q.pid);
+  bucket_simple_2_t *b =
+      (bucket_simple_2_t *)bpf_map_lookup_elem(&join_buckets_simple_2, &q.pid);
   if (!b) {
     ERROR("BUG: trying to delete non-existent bucket for simple_2");
     return BUG_ERROR_CODE;
@@ -361,8 +385,8 @@ s32 join_delete_bucket_simple_2(simple_2_t q) {
     return BUG_ERROR_CODE;
   }
   b->size -= 1;
-  // If size -> 0, clear bucket from hash table to save memory, as if the size becomes 0 it's likely
-  // that this value is quite rare
+  // If size -> 0, clear bucket from hash table to save memory, as if the size
+  // becomes 0 it's likely that this value is quite rare
   // TODO: see if this actually saves memory
   // if (b->size == 0) {
   //   bpf_map_delete_elem(&join_buckets_simple_2, &q.pid);
@@ -372,13 +396,14 @@ s32 join_delete_bucket_simple_2(simple_2_t q) {
 }
 
 // If tumbling windows, clear all values instead of individually deleting
-static u64 __clear_bucket_simple_2(struct bpf_map *m, s32 *pid, bucket_simple_2_t *b,
-                                   void *unused) {
+static u64 __clear_bucket_simple_2(struct bpf_map *m, s32 *pid,
+                                   bucket_simple_2_t *b, void *unused) {
   b->tail = b->head;
   b->size = 0;
   return 0;
 }
 
 void join_clear_buckets_simple_2() {
-  bpf_for_each_map_elem(&join_buckets_simple_2, __clear_bucket_simple_2, NULL, 0);
+  bpf_for_each_map_elem(&join_buckets_simple_2, __clear_bucket_simple_2, NULL,
+                        0);
 }
