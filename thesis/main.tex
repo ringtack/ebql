@@ -1,0 +1,197 @@
+%--------------------
+% Packages
+% -------------------
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8x]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{mathptmx}
+\usepackage{xcolor}
+% \usepackage{todonotes}
+\usepackage{subcaption}
+\usepackage[pdftex,linkcolor=black,pdfborder={0 0 0}]{hyperref}
+\usepackage{graphicx}
+\usepackage{calc}
+\usepackage{enumitem}
+\usepackage[a4paper, lmargin=0.1666\paperwidth, rmargin=0.1666\paperwidth, tmargin=0.1111\paperheight, bmargin=0.1111\paperheight]{geometry}
+\usepackage[all]{nowidow}
+\usepackage[protrusion=true,expansion=true]{microtype}
+% \usepackage{parskip}
+
+\frenchspacing
+\linespread{1.2}
+
+\newcommand{\leo}[1]{{\footnotesize \textcolor{blue}{$\ll$\textsf{Leonhard: #1}$\gg$}}}
+\newcommand{\ms}[1]{{\footnotesize \textcolor{green}{$\ll$\textsf{Malte: #1}$\gg$}}}
+
+\usepackage{listings, listings-rust}
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+
+\makeatletter
+\lstdefinestyle{mystyle}{
+  frame=single,
+  commentstyle=\color{codegreen},
+  keywordstyle=\color{magenta},
+  numberstyle=\tiny\color{codegray},
+  stringstyle=\color{codepurple},
+  basicstyle=\ttfamily\footnotesize,
+  breakatwhitespace=false,         
+  breaklines=true,                 
+  captionpos=b,                    
+  keepspaces=true,                 
+  numbersep=5pt,                  
+  showspaces=false,                
+  showstringspaces=false,
+  showtabs=false,                  
+  tabsize=2}
+\lstset{style=mystyle,language=Rust}
+\makeatother
+
+%-----------------------
+% Begin document
+%-----------------------
+\begin{document}
+
+% Title Page
+\thispagestyle{empty}
+
+\begin{center}
+    \vspace*{1em}{\Huge An Expressive Query Interface for High-Fidelity Observability\par}
+    
+    \vspace*{1em}{\huge Richard Tang\par}
+    
+    \vspace*{3em}{\LARGE Advisor: Malte Schwarzkopf\par Reader: Ugur Cetintemel\par}
+    
+    \vspace*{12em}\includegraphics[scale=0.08]{graphics/logo.png}\par
+    \vspace*{1em}{\LARGE Department of Computer Science\par Brown University\par Providence, RI \par
+    \today \par}
+\end{center}
+\newpage
+
+\tableofcontents
+\newpage
+
+\section*{Acknowledgements}
+\addcontentsline{toc}{section}{Acknowledgements}
+
+TODO
+% Thank you to Leonhard Spiegelberg for bringing me on board Tuplex in spring of 2021. Over the past
+% three semesters, I had the amazing opportunity to work the project with Leonhard and learn about
+% data science, systems, and research as a whole. Leonhard has offered guidance, support, and
+% expertise on every step of this thesis, and I am so grateful for his mentorship.
+
+% Thank you to my thesis advisor, Malte Schwarzkopf, for supporting me throughout my time working on
+% Tuplex. Malte's attention to detail, prodding questions, and interest in my work helped me grow and
+% kept me engaged throughout this process.
+
+% Thank you to my reader, Shriram Krishnamurthi, for offering his systems expertise in reviewing my
+% research. During my first semester at Brown in fall of 2018, Shriram's excitement, ability to
+% engage, and passion catalyzed my interest in computer science when I took his introductory course.
+
+% Finally, thank you to all of the professors, TAs, friends, and family who have supported me
+% throughout my undergraduate experience at Brown. You have helped make these past four years so
+% memorable and make it hard to finally say goodbye.
+
+\newpage
+
+\section*{Abstract}
+\addcontentsline{toc}{section}{Abstract}
+
+To understand the complex interactions in modern software, engineers often rely on detailed
+\textit{high-fidelity telemetry} (HFT) data collected via instrumentation tools injected into the
+kernel. Increasingly, developers have turned to eBPF (the extended Berkeley Packet Filter) for HFT
+data collected, as it provides an extensible framework for high performance, low overhead
+instrumentation. However, due to the eBPF's nascent, ever-evolving, and complex infrastructure,
+developers often end up resorting to simple but inefficient programs, or a limited set of tools from
+existing libraries.
+
+% However, developers wishing to write eBPF programs immediately
+% face significant obstacles: the
+% ecosystem is volatile and constantly evolving, the documentation
+% can be sparse or outdated, and
+% developers must have a deep knowledge of not only the internal
+% eBPF system architecture, but
+% also the kernel tracing infrastructure and generally the kernel
+% development environment. As a
+% result, tracing programs are often simple and/or inefficient,
+% incurring unnecessary (and
+% sometimes prohibitive) overhead, and developers frequently resort
+% to existing libraries like
+% \texttt{bcc}/\texttt{bpftrace} that provide a limited set of
+% tools.
+
+We introduce eBQL, a novel eBPF streaming query engine that enables performant HFT data collection
+via an expressive, high-level interface. eBQL provides a familiar relational layer over existing
+kernel tracing infrastructure, allowing developers to query arbitrary kernel events with minimal
+overhead. Internally, eBQL processes SQL queries into an abstract syntax tree (AST), analyzes and
+optimizes the AST, then generates an eBPF program to execute the query, streaming output via a
+structured schema definition.
+
+We evaluate eBQL-generated eBPF programs on a RocksDB case study simulating a real-world workload.
+eBQL queries incur a minimal abstraction overhead versus hand-optimized queries ($3.2\%$ vs.
+$1.7\%$), and offer a $5-8\times$ performance improvement over a baseline eBPF program.
+
+\newpage
+
+\input{introduction}
+
+\input{background}
+
+\input{design}
+
+\input{implementation}
+
+\input{evaluation}
+
+\section{Future Work}
+
+eBQL is still a prototype; there is much future work left to explore.
+
+We have shown that performing as much aggregation and filtering in kernel space significantly lowers
+overhead by reducing the amount of data transmitted between to user space (\S \ref{perf-drilldown}).
+Cost-based analysis and optimizations provide an opportunity to further develop this research: as
+recent work starts to quantify performance characteristics (ref: in-kernel traffic sketching) and
+latencies of specific BPF routines (ref: BPF runtime policy), it would be interesting to produce a
+cost estimate based not on disk IO cost (as in traditional DBMSs), but rather specific BPF routines,
+like kernel memory accesses or hash map iterations. Further, since BPF programs are executed
+continuously, there is potential to gather statistics on data characteristics and use runtime flags
+to dynamically enable/disable operators.
+
+These cost-based optimizations become increasingly important as the Linux kernel supports more
+features and gradually removes BPF restrictions. For instance, Linux v5.17 introduces an arbitrary
+\texttt{bpf\_loop} that relaxes loop restrictions (ref: bpf-loop kernel patch), and Linux 6+
+introduces \texttt{kfunc}s and non-BPF-map based data structures like linked lists and red-black
+trees, opening the floor for performant dynamic memory (ref: kfuncs, rb trees). With these
+constructs, joins can become feasible in kernel space, and so cost analysis to minimize tail
+latencies becomes even more pertinent.
+
+eBQL also adopts a relatively simple streaming approach that contains opportunities for
+sophistication. Although BPF functions are event-based and thus cannot be manually scheduled, there
+is opportunity to share synopses between multiple queries (e.g. if separate developers are querying
+the same tracepoint), and there are various probabilistic sketch algorithms for efficient sub-linear
+approximations that can be exploited. For instance, (ref: in-kernel traffic sketching) contains an
+implementation of the count-min sketch; it would be interesting to investigate the performance and
+\textit{feasibility} of other sketches, like HyperLogLog, Theta Sketches, and the t-digest/q-digest
+for quantiles.
+
+\section{Conclusion}
+
+eBQL is an eBPF streaming query engine that facilitates performant HFT data collection via an
+expressive interface, exposing a familiar relational layer over existing kernel tracing
+infrastructure. eBQL eases the burden of understanding internal kernel/BPF infrastructure and
+developing custom BPF programs, making low-overhead HFT data collection accessible to application
+developers.
+
+% References
+\newpage
+\bibliographystyle{plain}
+\bibliography{references}
+\addcontentsline{toc}{section}{References}
+
+\newpage
+\input{appendix}
+\addcontentsline{toc}{section}{Appendix}
+
+\end{document}
