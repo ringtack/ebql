@@ -1,0 +1,100 @@
+\section{Introduction}
+
+\subsection{Problem Statement}
+
+As modern software continues to grow in complexity, observability and continuous monitoring is
+becoming increasingful essential in ensuring a system's health and performance. To that end,
+existing forms of telemetry data like metrics, logs, and traces provide valuable insights:
+application-level logs on error messages and access patterns can aid in debugging software bugs and
+identifying performance regressions; metrics on resource usage (e.g. CPU, memory, and I/O), tail
+latencies, and uptime track overall health and reveal high-level anomalies in the system; and
+distributed traces follow execution flow and identify bottlenecks within a request processing
+pipeline.
+
+Combined, these types of telemetry data---commonly called ``The Three Pillars of
+Observability''---provide application-level monitoring of system health.  However, while this
+telemetry data can reveal high-level \textit{symptoms} of system anomalies, there are often
+insufficient to pinpoint the \textit{root cause}, as they lack the requisite granularity and thus do
+not contain crucial information needed for debugging.
+
+To analyze the root cause of performance regressions or system anomalies, developers must turn to
+high-fidelity telemetry (HFT) data. HFT data is collected from kernel events with a much higher
+level of granularity, and provides detailed contextual information at the triggered trace event.
+Using HFT data, developers can interactively investigate various system events for anomalies, and
+identify the root cause for system anomalies.
+
+However, actually generating HFT data can be highly involved, and the existing kernel functionality
+can be inflexible and/or inefficient, as tracing infrastructure often relies on costly
+interrupt-based event instrumentation, requires extensive kernel knowledge in order to develop
+efficient and sound programs, and sometimes necessitates kernel patches. Especially since this
+functionality is often injected at program hot paths or in systems under high load, HFT data
+collection programs \textit{must} incur negligible overhead and remain performant, even under
+intense resource pressure. Moreover, due to the ever-evolving nature of distributed applications,
+data collection programs must be dynamic and flexible.
+
+Recently, the growth and development of eBPF (the extended Berkeley Packet Filter), a kernel
+subsystem, has enabled an extensible interface for dynamic kernel tracing. eBPF provides a sandboxed
+virtual environment to run statically verified custom user ``probes'' that can perform in-kernel
+processing and context-specific information retrieval. These probes are then run at user-specified
+events, from kernel tracepoints and kprobes to the network ingress/egress path.
+
+Unfortunately, like kernel tracepoints, eBPF program development can be prohibitively complex, as
+developers must grapple with not only the kernel infrastructure, but now also subtleties in the eBPF
+architecture (and in particular, the BPF program verifier). Without a thorough knowledge of eBPF and
+the kernel as a whole, developers are often stuck writing simple but inefficient programs, or
+resorting to a set of existing, but limited and unstructured, tools (e.g. from
+\texttt{bcc}/\texttt{bpftrace}).
+
+\subsection{eBQL}
+
+To ease HFT data collection, we propose eBQL, an eBPF streaming query engine with an expressive
+interface that analyzes queries and generates optimized eBPF programs. At a high level, eBQL takes
+in an input query, parses it into an abstract syntax tree (AST), generates an optimal physical plan
+consisting of an kernel-space (i.e. eBPF) event processing component and a user-space component that
+additionally processes kernel events, before emitting to an output destination.
+
+eBQL has three design goals:
+\begin{enumerate}
+        \item \textbf{Provide an expressive query interface} for application developers to
+            dynamically query for HFT data at a high level, abstracting away internal eBPF
+            implementation details such that a deep knowledge of eBPF or the kernel is not required.
+        \item \textbf{Expose a general, structured API} for generated HFT data to enable seamless
+            integration with streaming data analytics pipelines like Spark or Flink, or existing
+            observability systems like Mach or M3DB.
+        \item \textbf{Facilitate performance optimizations} by providing a centralized system for
+            identifying optimal user-kernel space transitions in physical plans, analyzing physical
+            plans across probes to limit redundancy, and enabling stateful synopsis sharing between
+            different probes.
+\end{enumerate}
+
+We implement an eBQL prototype in Rust, and evaluate its performance on a simulated RocksDB
+workload. We find that eBQL's abstraction layer incurs only minimal---and resolvable---overhead over
+hand-optimized eBPF programs ($3.2\%$ vs $1.7\%$), and outperforms existing methods of eBPF-based
+HFT data collection by $5-6\times$.
+
+In summary, this thesis makes the following contributions:
+\begin{enumerate}
+    \item We define a \textbf{query language} over existing kernel event streams, associating events
+        with a structured relation, and extending SQL to support streaming semantics.
+    \item We \textbf{dynamically generate and load eBPF code} in a composible way from a physical
+        plan that was parsed and analyzed from an input query.
+    \item We \textbf{analyze the feasibility and performance implications} of query physical plan
+        implementations in eBPF contexts, and investigate the optimal user-kernel work division.
+\end{enumerate}
+
+% References:
+% \begin{itemize}
+    % \item RocksDB
+    % \item perf
+    % \item ftrace
+    % \item tracepoints
+    % \item eBPF
+    % \item bcc
+    % \item bpftrace
+    % \item Spark
+    % \item Flink
+    % \item Mach
+    % \item M3DB
+% \end{itemize}
+
+

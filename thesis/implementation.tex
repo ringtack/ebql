@@ -1,0 +1,128 @@
+\section{Implementation}
+
+We implement an eBQL prototype in Rust, with \textasciitilde{}3.5k lines of Rust and
+\textasciitilde{}1k lines of C. eBQL is compiled as a Rust library, allowing clients to link into
+its API (defined in Section \ref{ebql-api}).
+
+\subsection{eBQL Query Parsing}
+
+To support parsing of eBQL's extended SQL syntax, we extend an existing Rust SQL parser,
+\texttt{nom-sql}, which is based on the \texttt{nom} parser combinator framework (ref: nom-sql,
+nom). We preferred \texttt{nom-sql} over other SQL parsing libraries like \texttt{sqlparser} (ref:
+sqlparser), a top-down operator-precedence (TDOP) parser, due to parser generator frameworks'
+general ease of extensibility (and also my personal interest).
+
+We extend \texttt{nom-sql} with support for kernel event syntax (in standard SQL,
+slashes---\texttt{/}---are not supported), and eBQL-specific operators, such as \texttt{Window},
+\texttt{Histogram}, and \texttt{Quantile}, to support streaming semantics and additional analytics.
+
+\subsection{Code Generation}
+\label{impl-codegen}
+
+Stateless operators are relatively straightforward to generate (for instance, an \texttt{Equal(a,
+b)} filter becomes \texttt{if (a == b) \{ ... \}}) from the logical plan. Since the BPF stack size
+is limited to 512 bytes, eBQL attempts to consolidate projects, filters, and maps and avoid storing
+intermediate state on the stack.
+
+Fully generating stateful operators like aggregations and their associated synopses can become
+involved; further, the eBPF verifier requires argument types, map definitions, and function
+invocations to be statically declared, preventing useful generic programming techniques in C, such
+as function parameters and using \texttt{void *}. Thus, codegen is simplified by representing each
+stateful operator as a composable \textit{template}; when a specific query plan is compiled into
+eBPF code, the template is rendered with the actual values (in some senses, this is similar to
+monomorphization; the templates represent the generic parameters, while the rendered code is the
+unique instantiation).
+
+Figure \ref{code:agg-tmpl} shows an example template for a \texttt{bpf\_for\_each\_map\_elem}
+callback that fetches aggregation values. eBQL uses the Handlebars engine (ref: handlebars) to
+render templates into unique instantiations.
+
+\begin{figure}[htpb]
+\begin{lstlisting}[language=C]
+static __always_inline s64 __get_{{agg}}_{{field_name}}_{{query_name}}_callback(
+            struct bpf_map *map,
+            group_by_{{query_name}}_t *key,
+            agg_t *agg,
+            {{agg}}_{{field_name}}_{{query_name}}_ctx_t *ctx) {
+    // Skip if aggregation value is 0; this means the value was cleared
+    if (agg->val == 0) {
+        return 0;
+    }
+    // Set agg value
+    if (!ctx || !ctx->buf) {
+        ERROR("Passed null context/context buffer in");
+        return 1;
+    }
+    if (ctx->count >= ctx->buf_sz) {
+        WARN("Number of aggregation results exceeds buf size; stopping...");
+        return 1;
+    }
+    {{#each group_bys}}
+    ctx->buf[ctx->count].{{field_name}} = key->{{field_name}};
+    {{/each}}
+    ctx->buf[ctx->count].{{agg}}_{{field_name}} = agg->val;
+    ctx->count += 1;
+    return 0;
+}
+\end{lstlisting}
+\caption{A template for a callback to retrieve aggregated values using
+\texttt{bpf\_for\_each\_map\_elem}.}
+\label{code:agg-tmpl}
+\end{figure}
+
+Using these templates, the internal stateful operator implementations can be exposed via a single
+helper function; thus, in the actual eBPF program code, only that helper function needs to be
+invoked, greatly simplifying the codegen into a sequence of operators. A generated eBPF program for
+the program in Figure \ref{code:ebql-ex} might then look like this:
+
+\begin{lstlisting}[language=C]
+SEC("tp/syscalls/sys_enter_pread64")
+u32 pread_query(struct trace_event_raw_sys_enter* ctx) {
+    u64 pid = PID();
+    if (pid == 1041370) {
+        return 1;
+    }
+    u64 time = TIME();
+    u64 fd = ctx->args[0];
+    u64 cpu = CPU();
+    u64 count = ctx->args[2];
+    bool tumble = window_add(time);
+    if (tumble) {
+        // window tumbling and emitting to user-space logic...
+    }
+    insert_count__pread_query({fd, cpu}, 1);
+    insert_max_count_pread_query({fd, cpu}, count);
+    insert_avg_count_pread_query({fd, cpu}, count);
+    return 0;
+}
+\end{lstlisting}
+
+\subsection{Prototype Limitations}
+
+Being a prototype, eBQL has many limitations.
+
+eBQL's query plan analysis is limited, restricting the complexity of generated queries; in
+particular, nested aggregations, histograms/quantiles, nested selects, post-aggregation processing,
+and joins are not currently supported. Part of this is by design: due to its context of executing in
+resource-constrained, performance-sensitive environments, in-kernel queries should incur minimal
+overhead and avoid unpredictable runtimes that could spike tail latencies (for instance, a large
+binary join every second could skyrocket p99s). Part of it is from verifier restrictions: without
+support for dynamic memory or unbounded loops, programs must pre-allocate potentially wasteful
+amounts of memory, or are not feasibly implementable (i.e. joins and arbitrary windows).
+
+Part of its limitations is simply due to the code generation step; the method is rather simple,
+and does not handle more complicated ASTs yet. Thus, while templated operators enable ease of code
+generation, complicated control flow amounts to manual checks and implementation. In the future, it
+would be worth exploring potentially harnessing LLVM IR directly (as \texttt{bpftrace} does) to
+generate eBPF code, or implementing a more sophisticated compiler.
+
+eBQL currently only supports queries that are feasibly implementable in kernel space; queries that
+require complex post-processing in user-space are not supported.
+
+
+% references:
+% \begin{itemize}
+    % \item nom-sql, nom
+    % \item sqlparser
+    % \item handlebars
+% \end{itemize}
