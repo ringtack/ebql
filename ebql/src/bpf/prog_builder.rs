@@ -4,10 +4,10 @@ use std::{
     collections::HashMap,
     env,
     ffi::{OsStr, OsString},
-    fs::{self, OpenOptions},
+    fs::{OpenOptions},
     io::{self, Write},
     marker::PhantomData,
-    path::{Path, PathBuf},
+    path::{PathBuf},
     process::Command,
     str::FromStr,
 };

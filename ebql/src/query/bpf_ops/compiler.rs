@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, env, ffi::OsString, fs, io, path::PathBuf, sync::Arc};
+use std::{env, ffi::OsString, fs, io, path::PathBuf};
 
 use anyhow::{anyhow, Result};
 use handlebars::Handlebars;
@@ -16,7 +16,6 @@ use crate::{
         operators::{Operator, WindowType},
         physical_plan::BpfPlan,
     },
-    schema::schema::Schema,
     types::{Field, Type},
 };
 
@@ -44,7 +43,7 @@ impl QueryCompiler {
             Some(wt) => {
                 let wt = BpfWindowType::try_from(wt)?;
                 // For windows, get external header file
-                let tmpl = wt.get_tmpl(plan.schema.name.clone());
+                let tmpl = wt.get_tmpl(plan.schema.name.clone(), !plan.aggs.is_empty());
                 // Render template into actual code
                 handlebars.register_template_file(&tmpl.name, tmpl.tmpl_path)?;
                 let text = handlebars.render(&tmpl.name, &tmpl.ctx)?;
@@ -71,14 +70,16 @@ impl QueryCompiler {
                     // Register into code builder
                     cb.add_external_includes(&tmpl.name, text);
                 }
-                Operator::Max(field)
-                | Operator::Min(field)
-                | Operator::Average(field)
-                | Operator::Sum(field)
-                | Operator::Count(Some(field)) => {
+                Operator::Max(_field)
+                | Operator::Min(_field)
+                | Operator::Average(_field)
+                | Operator::Sum(_field) => {
                     agg_tmpl.ctx.update(op)?;
                 }
-                Operator::Count(None) => unimplemented!("TODO: implement count star"),
+                Operator::Count(_) => {
+                    agg_tmpl.ctx.update(op)?;
+                }
+                // Operator::Count(None) => unimplemented!("TODO: implement count star"),
                 _ => (),
             };
         }
@@ -106,6 +107,8 @@ impl QueryCompiler {
         };
 
         let cb = cb.write_ring_buffer(&rb);
+
+        log::info!("RB schema: {}", rb.s_repr.schema);
 
         // Then, build program from operators (TODO: handle join after i get working)
         let args = vec![Expr::new(
@@ -165,6 +168,7 @@ impl QueryCompiler {
                 Operator::Average(s) => ("avg", s.as_str()),
                 Operator::Sum(s) => ("sum", s.as_str()),
                 Operator::Count(Some(s)) => ("count", s.as_str()),
+                Operator::Count(None) => ("count", ""),
                 _ => {
                     return Err(anyhow!(
                         "First aggregation {} shuold be one of implemented aggs",
@@ -234,6 +238,10 @@ impl QueryCompiler {
                         let func = format!("get_count_{}_{}", s, &plan.schema.name);
                         cb.write_func_call(&func, &["buf", "n_results"]);
                     }
+                    Operator::Count(None) => {
+                        let func = format!("get_count__{}", &plan.schema.name);
+                        cb.write_func_call(&func, &["buf", "n_results"]);
+                    }
                     _ => unimplemented!("tumble agg for {agg} not implemented"),
                 }
             }
@@ -271,7 +279,8 @@ impl QueryCompiler {
                                 cb.write_func_call(&func, &[]);
                             }
                             None => {
-                                unimplemented!("count(*) not yet supported :(")
+                                let func = format!("tumble_count__{}", &plan.schema.name);
+                                cb.write_func_call(&func, &[]);
                             }
                         }
                     }
@@ -331,7 +340,9 @@ impl QueryCompiler {
                                 cb.write_func_call(&func, &args);
                             }
                             None => {
-                                unimplemented!("count(*) not yet supported :(")
+                                let func = format!("insert_count__{}", &plan.schema.name);
+                                let args = vec![gb.as_str(), "1"];
+                                cb.write_func_call(&func, &args);
                             }
                         }
                     }
@@ -342,24 +353,31 @@ impl QueryCompiler {
             unimplemented!("distinct joins not yet supported")
         } else {
             // Add to window
-            // TODO: do tumble check first, before adding regardless
+            let window_arg = format!(
+                "({}_t){{{}}}",
+                &plan.schema.name,
+                plan.projects
+                    .iter()
+                    .map(|f| f._name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             cb.write_var_initialization(
                 &Field::new(String::from("tumble"), Type::Bool),
-                &format!(
-                    "window_add(({}_t){{{}}})",
-                    &plan.schema.name,
-                    plan.projects
-                        .iter()
-                        .map(|f| f._name.clone())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
+                &format!("window_add({})", window_arg),
             );
 
             // If tumble, copy over
             cb.write_if("tumble");
 
-            cb.write_var_initialization(&Field::new(String::from("n_results"), Type::U64), "w->sz");
+            cb.write_var_initialization(
+                &Field::new(String::from("n_results"), Type::U64),
+                "get_size()",
+            );
+
+            // Only proceed if we actually have results
+            // cb.write_if("n_results > 0");
+
             // Appease verifier
             cb.write_if(&format!("n_results >= {}", &rb.max_entries));
             cb.write_func_call(
@@ -368,9 +386,6 @@ impl QueryCompiler {
             );
             cb.write_var_assignment("n_results", &format!("{}", &rb.max_entries));
             cb.close_if();
-
-            // Only proceed if we actually have results
-            cb.write_if("n_results > 0");
 
             let n_bytes = format!("n_results * sizeof({}_t)", &plan.schema.name);
             // Reserve space in ringbuf
@@ -382,7 +397,7 @@ impl QueryCompiler {
                         None,
                     ))),
                 ),
-                &format!("bpf_ringbuf_reserve({}, {}, 0)", &rb.name, n_bytes),
+                &format!("bpf_ringbuf_reserve(&{}, {}, 0)", &rb.name, n_bytes),
             );
 
             // Bounds check to appease verifier
@@ -392,15 +407,19 @@ impl QueryCompiler {
             cb.close_if();
 
             // Copy over from window
-            cb.write_func_call(
-                "bpf_probe_read_kernel",
-                &["buf", n_bytes.as_str(), "w->buf"],
-            );
+            cb.write_func_call("bpf_probe_read_kernel", &["buf", n_bytes.as_str(), "w.buf"]);
 
             // Submit
             cb.write_func_call("bpf_ringbuf_submit", &["buf", "0"]);
 
-            cb.close_if();
+            // cb.close_if();
+
+            // Afterwards, tumble window
+            if matches! {&plan.window, Some(WindowType::Time(_, _))} {
+                cb.write_func_call("window_tumble", &[&window_arg]);
+            } else {
+                cb.write_func_call("window_tumble", &[]);
+            }
             cb.close_if();
         }
 

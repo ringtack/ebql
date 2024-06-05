@@ -29,16 +29,22 @@ impl RecordBatch {
 
 impl Display for RecordBatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "RecordBatch(\n\tSchema: {}\n\tRecords: {}\n)",
-            self.schema,
-            self.records
-                .iter()
-                .map(|r| r.to_string())
-                .collect::<Vec<_>>()
-                .join(", "),
-        )
+        let mut records = Vec::new();
+        for record in &self.records {
+            let mut record_str = String::from("[");
+            let mut i = 0;
+            for f in self.schema.fields.iter() {
+                record_str.push_str(&format!("{}: {}", f.name, record.get(i)));
+                i += 1;
+                if i != self.schema.fields.len() {
+                    record_str.push_str(", ")
+                }
+            }
+            record_str.push(']' as char);
+            records.push(record_str);
+        }
+
+        write!(f, "RecordBatch(\n\t{}\n)", records.join("\n\t"))
     }
 }
 

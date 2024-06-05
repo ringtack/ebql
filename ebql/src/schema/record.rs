@@ -1,6 +1,6 @@
 //
 
-use std::{fmt::Display, ops::Deref, sync::Arc, time::Duration};
+use std::{fmt::Display, ops::Deref, time::Duration};
 
 use nom_sql::Literal;
 
@@ -19,6 +19,11 @@ impl Record {
     /// Gets the length of this record (i.e. # columns)
     pub fn len(&self) -> usize {
         self.0.len()
+    }
+
+    /// Gets a copy of the item at the specified index.
+    pub fn get(&self, i: usize) -> DataValue {
+        self.0[i].clone()
     }
 
     /// Return size of this instance in bytes.

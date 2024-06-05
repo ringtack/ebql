@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use serde::Serialize;
 
 use super::{HeaderTemplate, BPF_HEADERS_DIR};
-use crate::{field::Field, query::operators::Operator, types};
+use crate::{query::operators::Operator, types};
 
 #[derive(Serialize, Default)]
 pub struct BpfAggregateTemplate {
@@ -100,6 +100,14 @@ impl BpfAggregateTemplate {
                     is_avg: false,
                     agg: "count".into(),
                     field_name: f.clone(),
+                    query_name: self.query_name.clone(),
+                }
+            }
+            Operator::Count(None) => {
+                Agg {
+                    is_avg: false,
+                    agg: "count".into(),
+                    field_name: String::new(),
                     query_name: self.query_name.clone(),
                 }
             }

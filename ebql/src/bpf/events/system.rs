@@ -1,4 +1,4 @@
-use std::{alloc::System, fmt::Display, str::FromStr};
+use std::{fmt::Display, str::FromStr};
 
 use anyhow::{bail, Result};
 use strum::EnumIter;

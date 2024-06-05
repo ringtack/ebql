@@ -1,0 +1,101 @@
+#pragma once
+
+/**
+ * Windowing capabilities that turn eBPF event streams into bounded relations.
+ * Three window types are supported:
+ * - Count(N, step): Stores a window of N elements, with a step <= N.
+ * - Time(Interval, step): Stores a window of interval time span, with step <=
+ * interval.
+ * - TODO: Session(threshold): Stores a window by sessions of activity, with an
+ * inactivity threshold.
+ *
+ * Stream processing occurs only when the step is triggered (e.g. the step
+ * duration elapsed in a time interval).
+ *
+ * RESTRICTIONS (until I can figure out more verifier stuff):
+ * - For counts, WINDOW_SIZE % STEP == 0 (i.e. WINDOW_SIZE must be divisible by
+ * STEP)
+ * - For time, STEP == INTERVAL (i.e. all time windows must be tumbling
+ * windows).
+ */
+
+#include "common.bpf.h"
+#include "{{query_name}}.bpf.h"
+
+#define WINDOW_SIZE ({{count}})
+{{#unless is_count}}
+#define INTERVAL ({{interval}})
+{{/unless}}
+
+// Window representation. Separate win and next, since max allowed map size is
+// 4MB.
+typedef struct window {
+  {{query_name}}_t buf[WINDOW_SIZE];
+
+  // Window metadata
+  u32 size;
+} window_t;
+
+// Global window state representation
+window_t w = {0};
+
+static __always_inline bool window_will_tumble({{query_name}}_t q) {
+{{#if is_count}}
+  return (w.size == WINDOW_SIZE);
+{{else}}
+  // Since tumbling window, oldest element is always elt_0
+  u64 t_since_oldest = q.time - w.buf[0].time;
+  return (w.size > 0 && t_since_oldest >= INTERVAL);
+{{/if}}
+}
+
+// Adds an element to the window, returning whether a flush will occur.
+static __always_inline bool window_add({{query_name}}_t q) {
+{{#if is_count}}
+
+  if (w.size < WINDOW_SIZE) {
+    w.buf[w.size] = q;
+    w.size += 1;
+    // Check if need to flush
+    return (w.size == WINDOW_SIZE);
+  }
+  // Should never get here
+  return true;
+
+{{else}}
+
+  // Since tumbling window, oldest element is always elt_0
+  u64 t_since_oldest = q.time - w.buf[0].time;
+  // Add to window if no elements currently, or within start of this window
+  if (w.size == 0 || t_since_oldest < INTERVAL) {
+    // If full, log warning and drop
+    if (w.size >= WINDOW_SIZE) {
+      WARN("Window is full; dropping new event...");
+      return false;
+    }
+    w.buf[w.size] = q;
+    w.size += 1;
+    return false;
+  } else {
+    // Otherwise, set to first element
+    // TODO: this is jank, but stops us from needing to call window_add again after a flush
+    return true;
+  }
+{{/if}}
+}
+
+/**
+ * Tumbles the window.
+ */
+{{#if is_count}}
+static void __always_inline window_tumble() {
+ w.size = 0;
+}
+{{else}}
+static s32 __always_inline window_tumble({{query_name}}_t q) {
+  w.buf[0] = q;
+  w.size = 1;
+}
+{{/if}}
+
+static u64 __always_inline get_size() { return w.size; }

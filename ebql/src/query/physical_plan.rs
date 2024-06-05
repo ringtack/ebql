@@ -1,23 +1,17 @@
-use std::{collections::HashMap, fmt, ops::Deref, sync::Arc};
+use std::{collections::HashMap, fmt, sync::Arc};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use daggy::Walker;
 use nom_sql::{
-    ArithmeticExpression, Column, ConditionBase, ConditionExpression, FieldDefinitionExpression,
-    FieldValueExpression::{Arithmetic, Literal},
-    FunctionArgument, FunctionExpression, JoinConstraint, JoinOperator, JoinRightSide,
-    SelectStatement,
+    Column, ConditionBase, ConditionExpression, FieldDefinitionExpression, FunctionArgument,
+    FunctionExpression, JoinConstraint, JoinOperator, JoinRightSide, SelectStatement,
 };
 use rand::distributions::{Alphanumeric, DistString};
 
-use super::{
-    logical_plan::LogicalPlan,
-    operators::{Operator, WindowType},
-};
+use super::operators::{Operator, WindowType};
 use crate::{
     events::{get_event, Event},
     field::Field,
-    query::operators::MapExpression,
     schema::schema::Schema,
     types::{self, Type},
 };
@@ -151,8 +145,8 @@ impl PhysicalPlan {
         bpf_plan.distinct = s.distinct;
 
         // Parse fields to project, and see which aggregations to use
-        let mut project_fields = HashMap::new();
-        let mut output_fields = HashMap::new();
+        let mut project_fields = Vec::new();
+        let mut output_fields = Vec::new();
 
         // Parse window
         if let Some(window) = s.window {
@@ -162,7 +156,7 @@ impl PhysicalPlan {
                         unimplemented!("non-tumbling windows not yet supported")
                     }
                     bpf_plan.window = Some(WindowType::Time(ival, step));
-                    project_fields.insert("time".into(), e.get_arg("time").unwrap());
+                    project_fields.push(e.get_arg("time").unwrap());
                 }
                 nom_sql::WindowType::Count(count, step) => {
                     if count != step {
@@ -185,10 +179,14 @@ impl PhysicalPlan {
             let fields = e.get_args(&cols)?;
             // Add them to be projected *and* outputted
             fields.iter().for_each(|f| {
-                project_fields.insert(f._name.clone(), f.clone());
+                if !project_fields.contains(f) {
+                    project_fields.push(f.clone());
+                }
             });
             fields.iter().for_each(|f| {
-                output_fields.insert(f._name.clone(), f.clone());
+                if !output_fields.contains(f) {
+                    output_fields.push(f.clone());
+                }
             });
             // Mark them as fields to group by
             bpf_plan.group_by = fields;
@@ -200,7 +198,9 @@ impl PhysicalPlan {
             match f_def {
                 FieldDefinitionExpression::All => {
                     e.get_all_args()?.iter().for_each(|f| {
-                        project_fields.insert(f._name.clone(), f.clone());
+                        if !project_fields.contains(f) {
+                            project_fields.push(f.clone());
+                        }
                     });
                 }
                 FieldDefinitionExpression::AllInTable(_) => {
@@ -213,10 +213,14 @@ impl PhysicalPlan {
                         bpf_plan.aggs.push(op);
                     }
                     proj_f.into_iter().for_each(|f| {
-                        project_fields.insert(f._name.clone(), f);
+                        if !project_fields.contains(&f) {
+                            project_fields.push(f.clone());
+                        }
                     });
                     out_f.into_iter().for_each(|f| {
-                        output_fields.insert(f._name.clone(), f);
+                        if !output_fields.contains(&f) {
+                            output_fields.push(f.clone());
+                        }
                     });
                 }
                 _ => unimplemented!("field definition expressions not supported"),
@@ -255,7 +259,9 @@ impl PhysicalPlan {
         if let Some(ce) = s.where_clause {
             // Get all columns and associated fields
             get_contained_columns(&ce, &e)?.iter().for_each(|f| {
-                project_fields.insert(f._name.clone(), f.clone());
+                if !project_fields.contains(f) {
+                    project_fields.push(f.clone());
+                }
             });
             // Create filter op out of it
             bpf_plan.filters = Some(Operator::Filter(ce));
@@ -316,15 +322,14 @@ impl PhysicalPlan {
         }
 
         // Get fields to project
-        bpf_plan.projects = project_fields.values().cloned().collect();
+        bpf_plan.projects = project_fields.clone();
         // If output fields exist (i.e. an aggregation occurred), use those; otherwise,
         // copy project fields
         if output_fields.len() > 0 {
             bpf_plan.schema = Arc::new(Schema::new(
                 Some(query_name),
                 output_fields
-                    .values()
-                    .cloned()
+                    .clone()
                     .into_iter()
                     .map(|f| Field::from(f))
                     .collect(),
@@ -398,8 +403,8 @@ impl PhysicalPlan {
     // }
 }
 
-/// Gets the field associated with a column at an event, and an optional
-/// aggregation / distinct marker
+/// Gets the field associated with a column at an event, the name for the
+/// aggregated field, and an optional aggregation / distinct marker
 fn get_column(
     c: Column,
     e: &Arc<dyn Event>,
@@ -415,10 +420,11 @@ fn get_column(
                     }
                     // Add two fields: avg_{field}, and avg_{field}_count
                     let f_avg = types::Field::new(format!("avg_{}", &col.name), Type::U64);
-                    let f_count = types::Field::new(format!("avg_{}_count", &col.name), Type::U64);
+                    // let f_count = types::Field::new(format!("avg_{}_count", &col.name),
+                    // Type::U64);
                     return Ok((
                         vec![e.get_arg(&col.name)?],
-                        vec![f_avg, f_count],
+                        vec![f_avg],
                         Some(Operator::Average(col.name.clone())),
                         d,
                     ));
@@ -445,7 +451,12 @@ fn get_column(
             }
             FunctionExpression::CountStar => {
                 // Update distinct value
-                return Ok((vec![], vec![], Some(Operator::Count(None)), false));
+                return Ok((
+                    vec![],
+                    vec![types::Field::new(format!("count_"), Type::U64)],
+                    Some(Operator::Count(None)),
+                    false,
+                ));
             }
             FunctionExpression::Sum(ref col, d) => {
                 if let FunctionArgument::Column(col) = col {

@@ -21,15 +21,20 @@ pub struct BpfWindowTemplate {
 }
 
 impl BpfWindowType {
-    pub fn get_tmpl(&self, name: String) -> HeaderTemplate<BpfWindowTemplate> {
+    pub fn get_tmpl(&self, name: String, has_aggs: bool) -> HeaderTemplate<BpfWindowTemplate> {
         let (is_count, count, interval_ns) = match self {
             BpfWindowType::TumblingCountWindow(n) => (true, *n, 0),
-            BpfWindowType::TumblingTimeWindow(dur) => (false, 0, dur.as_nanos() as u64),
+            BpfWindowType::TumblingTimeWindow(dur) => (false, 1 << 15, dur.as_nanos() as u64),
         };
 
+        let window_type = if has_aggs {
+            "tumbling_window"
+        } else {
+            "stateful_window"
+        };
         HeaderTemplate {
-            name: format!("tumbling_window"),
-            tmpl_path: [BPF_HEADERS_DIR, "tumbling_window.bpf.h.tmpl"]
+            name: window_type.to_string(),
+            tmpl_path: [BPF_HEADERS_DIR, &format!("{window_type}.bpf.h.tmpl")]
                 .iter()
                 .collect::<PathBuf>(),
             ctx: BpfWindowTemplate {

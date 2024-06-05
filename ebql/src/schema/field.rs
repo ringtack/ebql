@@ -2,8 +2,6 @@
 
 use std::{fmt, ops::Deref, sync::Arc};
 
-use anyhow::{bail, Result};
-use nom_sql::Column;
 
 use crate::{
     data_types::DataType,

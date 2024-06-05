@@ -9,4 +9,6 @@ pub mod query;
 pub mod schema;
 
 use bpf::*;
-use schema::*;
+use physical_plan::*;
+use query::*;
+use schema::{schema::*, *};

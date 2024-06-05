@@ -1,9 +1,9 @@
 //! Data type definitions.
 
-use std::{default, fmt};
+use std::{fmt};
 
 use crate::{
-    field::{FieldRef, Fields},
+    field::{Fields},
     types::Type,
 };
 

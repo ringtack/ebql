@@ -81,7 +81,7 @@ const volatile u8 LOG_LVL = L_DEBUG;
       bpf_printk("got error in getting comm: %ld", __comm_ret);                \
       return __comm_ret;                                                       \
     }                                                                          \
-    while (0)
+  }  while (0)
 
 #define PID(var)                                                               \
   do {                                                                         \

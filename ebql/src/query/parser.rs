@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use nom_sql::{SelectStatement, SqlQuery};
 
 pub fn parse_query(q: String) -> Result<SelectStatement> {

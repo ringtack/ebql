@@ -1,22 +1,7 @@
-use std::{sync::Arc, time::Duration};
-
 use clap::Parser;
 use ebql::{
-    bpf::{
-        events::get_event,
-        types::{self, Type},
-    },
     exec::executor::Executor,
-    query::{
-        bpf_ops::compiler::QueryCompiler,
-        operators::{Operator, WindowType},
-        parser::parse_query,
-        physical_plan::{self, BpfPlan, PhysicalPlan},
-    },
-    schema::{data_types::DataType, field::Field, schema::Schema},
-};
-use nom_sql::{
-    Column, ConditionBase, ConditionExpression, ConditionTree, Literal, SelectStatement, SqlQuery,
+    query::{bpf_ops::compiler::QueryCompiler, parser::parse_query, physical_plan::PhysicalPlan},
 };
 
 #[derive(Parser, Debug, Clone)]

@@ -1,8 +1,8 @@
 use std::{fmt::Display, sync::Arc, time::Duration};
 
-use nom_sql::{ArithmeticBase, ArithmeticExpression, ArithmeticOperator, ConditionExpression};
+use nom_sql::{ArithmeticExpression, ConditionExpression};
 
-use crate::{data_types::DataType, events::Event, field::Field, record::DataValue};
+use crate::{events::Event, field::Field, record::DataValue};
 
 #[derive(Clone)]
 pub enum Operator {
